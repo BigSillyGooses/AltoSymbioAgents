@@ -1,0 +1,146 @@
+name: windows-smoke
+
+# Layer C4 boot-smoke for the Pinokio bootstrap pipeline. On a Windows
+# runner, mimics what the BootstrapWizard does at first launch:
+#   1. Create a fresh venv with the runner's Python 3.12.
+#   2. `pip install --no-cache-dir backend` — non-editable, matches the
+#      packaged-mode codepath that bootstrap/sidecar_venv.ts runs.
+#   3. Spawn the generated `Scripts/altosymbiosis-server.exe` console
+#      script and wait for `PORT=<n>` / `READY` on stdout.
+# Catches packaging regressions (missing module in pyproject.toml, broken
+# keyring stub, sqlite-vec wheel mismatch) before they reach users instead
+# of after a user posts a screenshot.
+#
+# Path-scoped: a typo in a renderer .tsx doesn't risk the sidecar bundle,
+# so we skip the build in that case.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "electron-builder.yml"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/windows-smoke.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "electron-builder.yml"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/windows-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  boot-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Create fresh venv and pip-install the sidecar package
+        # Mimics the packaged-mode codepath: non-editable install of
+        # backend/ into a fresh venv. The generated entry-point script
+        # lands at <venv>/Scripts/altosymbiosis-server.exe — that's what
+        # the production sidecar.ts spawns at runtime.
+        shell: pwsh
+        run: |
+          python -m venv .venv-smoke
+          .venv-smoke\Scripts\python -m pip install --upgrade pip
+          .venv-smoke\Scripts\pip install --no-cache-dir .\backend
+          if (-not (Test-Path ".venv-smoke\Scripts\altosymbiosis-server.exe")) {
+            Write-Error "pip install did not produce Scripts/altosymbiosis-server.exe — pyproject.toml [project.scripts] regression"
+            exit 1
+          }
+
+      - name: Verify templates + config rode along into site-packages
+        # Commit-3 preflight confirmed that core/templates/ + core/config/
+        # must land alongside core/__init__.py for non-editable installs.
+        # Regression here would mean the package-data declaration in
+        # pyproject.toml was clobbered.
+        shell: pwsh
+        run: |
+          $sitePkgs = ".venv-smoke\Lib\site-packages"
+          $tpl = Join-Path $sitePkgs "core\templates\actor_system.txt"
+          $cfg = Join-Path $sitePkgs "core\config\models.json"
+          foreach ($p in @($tpl, $cfg)) {
+            if (-not (Test-Path $p)) {
+              Write-Error "Missing package data: $p"
+              exit 1
+            }
+            Write-Host "OK: $p"
+          }
+
+      - name: Spawn altosymbiosis-server and wait for READY
+        # backend/server.py prints `PORT=<n>` (line 296, flush=True) then
+        # `READY` (line 328, flush=True) once uvicorn is serving. Smoke
+        # is: launch the entry-point .exe, capture stdout, fail if READY
+        # doesn't appear within 90s. Mirrors the production spawn from
+        # desktop-shell/sidecar.ts with PYTHONUNBUFFERED=1 +
+        # PYTHONIOENCODING=utf-8 so inherited pipe handles flush.
+        shell: pwsh
+        timeout-minutes: 3
+        env:
+          PYTHONUNBUFFERED: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: |
+          $exe = ".venv-smoke\Scripts\altosymbiosis-server.exe"
+          $logPath = "$env:RUNNER_TEMP\sidecar-stdout.log"
+          $errPath = "$env:RUNNER_TEMP\sidecar-stderr.log"
+          $userData = "$env:RUNNER_TEMP\smoke-userdata"
+          New-Item -ItemType Directory -Force -Path $userData | Out-Null
+          Write-Host "Launching $exe; capturing stdout to $logPath"
+
+          $proc = Start-Process -FilePath $exe `
+              -ArgumentList "--token","smoke-test-token","--user-data","$userData" `
+              -RedirectStandardOutput $logPath `
+              -RedirectStandardError $errPath `
+              -PassThru `
+              -NoNewWindow
+
+          $deadline = (Get-Date).AddSeconds(90)
+          $ready = $false
+          $exited = $false
+          while ((Get-Date) -lt $deadline) {
+            if (Test-Path $logPath) {
+              $content = Get-Content $logPath -Raw -ErrorAction SilentlyContinue
+              if ($content -and $content -match "READY") {
+                $ready = $true
+                Write-Host "Sidecar reported READY — boot-smoke passed."
+                break
+              }
+            }
+            if ($proc.HasExited) {
+              $exited = $true
+              Write-Host "Sidecar exited early with code $($proc.ExitCode) before READY was seen."
+              break
+            }
+            Start-Sleep -Milliseconds 500
+          }
+
+          Write-Host "--- sidecar stdout ---"
+          if (Test-Path $logPath) { Get-Content $logPath } else { Write-Host "(no stdout captured)" }
+          Write-Host "--- sidecar stderr ---"
+          if (Test-Path $errPath) { Get-Content $errPath } else { Write-Host "(no stderr captured)" }
+
+          if (-not $proc.HasExited) {
+            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
+          }
+
+          if (-not $ready) {
+            if ($exited) {
+              Write-Error "Sidecar exited (code $($proc.ExitCode)) before READY appeared — pip-install regression."
+            } else {
+              Write-Error "Sidecar did not print READY within 90s — pip-install regression."
+            }
+            exit 1
+          }

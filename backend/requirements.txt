@@ -1,0 +1,65 @@
+# ── altosybioagents sidecar — lite bundle (~80 MB installed) ─────────────────────
+#
+# This is the only requirements file shipped with the Electron installer.
+# RAG / semantic memory uses fastembed (ONNX) + sqlite-vec instead of
+# the legacy torch + sentence-transformers + chromadb stack.
+#
+# All deps must ship as prebuilt wheels — no compile step at install time.
+# pip is invoked with --only-binary=:all: in 1-install.ps1.
+
+# ── HTTP server ──────────────────────────────────────────────────────────────
+fastapi>=0.115.0,<0.120.0
+uvicorn[standard]>=0.30.0,<0.35.0
+pydantic>=2.7.0,<3.0.0
+python-multipart>=0.0.9
+
+# ── Existing service deps (kept from archive/legacy-v5/app/requirements.txt) ─
+requests>=2.31.0
+psutil>=5.9.0
+numpy>=1.26.0
+platformdirs>=4.0.0
+
+# ── Anthropic SDK ────────────────────────────────────────────────────────────
+# >=0.50.0 required for stable thinking_delta / text_delta event types in
+# messages.stream(), used by ClaudeClient.stream_extended_thinking_chat().
+anthropic>=0.50.0
+
+# ── Resilience ───────────────────────────────────────────────────────────────
+tenacity>=8.3.0
+
+# ── Lightweight embedding & vector search ─────────────────────────────────
+# fastembed: ONNX-based embeddings, no PyTorch. ~100MB installed.
+# Replaces sentence-transformers (~2GB with torch).
+fastembed>=0.4.0
+
+# sqlite-vec: vector search as a SQLite extension. ~163KB.
+# Replaces ChromaDB.
+sqlite-vec>=0.1.6
+
+# rank-bm25: BM25 keyword search for hybrid retrieval.
+# Was imported by semantic_search.py but missing from requirements.
+rank-bm25>=0.2.2
+
+# ── OS-native secret storage (DPAPI on Win, Keychain on Mac, SecretService on
+# Linux). Keeps the legacy keyring contract used by core/settings.py and
+# services/mcp_credentials.py.
+keyring>=24.0.0
+
+# ── Multi-provider LLM adapter (BYO-key path) ───────────────────────────────
+# LiteLLM normalises 100+ provider APIs (OpenAI / Gemini / Groq / Mistral /
+# DeepSeek / Grok / Cohere / Ollama, etc.) behind a single OpenAI-compatible
+# call. We expose it through a third LLMClient implementation
+# (services/llm_litellm_adapter.LiteLLMClient) so HubRouter.invoke() can
+# dispatch BYO-keyed traffic without rewriting ClaudeClient or LocalClient.
+# Pinned conservatively because LiteLLM ships breaking changes between
+# minor versions historically.
+litellm>=1.50.0,<2.0.0
+
+# ── Orchestrator control-flow graph ─────────────────────────────────────────
+# LangGraph 1.x StateGraph powers services/orchestrator_graph.py — the
+# Stage-2 #7 rewrite of ChatOrchestrator.send() as a node-and-edge graph.
+# Selected at runtime by the ``orchestrator_engine`` setting (default
+# "legacy"); both engines share the same downstream services (TurnLifecycle,
+# MemoryRecall, TurnRouter, SecurityGate, WorkerDispatch, EscalationLadder,
+# hub_router, governance, CaMeL, Reader/Actor split, voting).
+langgraph>=1.2,<2.0.0

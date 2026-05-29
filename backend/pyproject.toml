@@ -1,0 +1,81 @@
+# backend/pyproject.toml — installable package for the FastAPI sidecar.
+#
+# In the Pinokio-style bootstrap pipeline (claude/pinokio-pipeline) this file
+# replaces the PyInstaller spec as the production install mechanism:
+#
+#   * Dev:      `pip install -e .` from <repo>/backend (editable)
+#   * Packaged: `pip install .`    from <resourcesPath>/sidecar (non-editable;
+#                                  process.resourcesPath is read-only)
+#
+# The venv that runs this lives at <userData>/bin/sidecar-venv (see
+# desktop-shell/bootstrap/sidecar_venv.ts). pip generates a console-script
+# shim at <venv>/Scripts/altosymbiosis-server.exe from `[project.scripts]`
+# below — that's what desktop-shell/sidecar.ts spawns at runtime.
+#
+# The single source of truth for invocation is [project.scripts]; sidecar.ts
+# resolveSpawnArgs uses that .exe directly with `--token <uuid> --user-data
+# <path>`. server.py:main() (line 281) parses those flags and prints
+# `PORT=<n>` followed by `READY` — matches both sidecar.ts:286-292's stdout
+# reader and bin_manager.ts:runSidecarSmokeTest's smoke-test parser.
+
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "altosymbiosis-server"
+version = "1.0.0"
+description = "altosybioagents FastAPI sidecar — Anthropic API + local model orchestration"
+requires-python = ">=3.12"
+
+# Runtime deps mirror backend/requirements.txt. Keep these two lists in sync;
+# the dev workflow still reads requirements.txt directly when devs `pip install
+# -r requirements.txt` from a shell, but the Pinokio install path consumes
+# the canonical pyproject.toml below. requirements-dev.txt / -bench.txt /
+# -build.txt are NOT mirrored here — they remain dev-only.
+dependencies = [
+  "fastapi>=0.115.0,<0.120.0",
+  "uvicorn[standard]>=0.30.0,<0.35.0",
+  "pydantic>=2.7.0,<3.0.0",
+  "python-multipart>=0.0.9",
+  "requests>=2.31.0",
+  "psutil>=5.9.0",
+  "numpy>=1.26.0",
+  "platformdirs>=4.0.0",
+  "anthropic>=0.50.0",
+  "tenacity>=8.3.0",
+  "fastembed>=0.4.0",
+  "sqlite-vec>=0.1.6",
+  "rank-bm25>=0.2.2",
+  "keyring>=24.0.0",
+]
+
+[project.scripts]
+# Single source of truth for sidecar invocation. server.py:main() exists
+# already and takes --token + --user-data; pip generates Scripts/altosymbiosis-
+# server.exe pointing at it. NEVER change the name without updating
+# desktop-shell/bootstrap/bin_manager.ts:getSidecarEntryPoint() in lockstep.
+altosymbiosis-server = "server:main"
+
+[tool.setuptools]
+# Top-level flat-layout modules (no surrounding package dir).
+py-modules = ["server", "db", "models", "sse_events"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "routes*", "services*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+# Non-Python data files that ride along with the `core` package. templates/
+# holds reader_system.txt + actor_system.txt (loaded by services/chat_orches
+# trator.py via `core/templates/<name>`); config/ holds models.json (loaded
+# by core/model_catalog.py). Verified by commit-3 preflight: a clean
+# non-editable install via `pip install --no-cache-dir .` places these at
+# <site-packages>/core/templates/ and <site-packages>/core/config/, which
+# `Path(__file__).resolve().parent / "templates" / name` and
+# `Path(__file__).resolve().parent / "config" / "models.json"` resolve to
+# correctly from inside the `core` package. The original commit-5 TODO
+# about packaged-mode data files is therefore resolved at commit 3.
+core = ["templates/*", "config/*"]

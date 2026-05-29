@@ -1,0 +1,102 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      # Python is set up for the backend pytest gate only. The installer
+      # itself no longer needs Python at build time — bootstrap (Miniconda
+      # + sidecar venv) happens on first launch of the installed app, see
+      # desktop-shell/bootstrap/.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Install sidecar package + dev test deps for pytest
+        run: |
+          cd backend
+          pip install --no-cache-dir .
+          pip install --no-cache-dir -r requirements-dev.txt
+
+      - name: Run backend tests
+        run: |
+          cd backend
+          python -m pytest tests/ -q
+
+      - name: Run frontend tests
+        run: npm run test:frontend
+
+      - name: Build renderer + main + preload
+        run: npm run build
+
+      - name: Publish Windows installer
+        run: npx electron-builder --win --publish always
+
+      - name: Compute installer SHA256
+        id: hash
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem dist\*.exe | Select-Object -First 1).FullName
+          if (-not $exe) {
+            Write-Error "no .exe found in dist\"
+            exit 1
+          }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          $name = Split-Path $exe -Leaf
+          Write-Host "Installer: $name"
+          Write-Host "SHA256:    $hash"
+          "name=$name"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Append SHA256 to release body
+        uses: actions/github-script@v8
+        env:
+          ASSET_NAME: ${{ steps.hash.outputs.name }}
+          ASSET_SHA256: ${{ steps.hash.outputs.sha256 }}
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const { ASSET_NAME, ASSET_SHA256 } = process.env;
+            // electron-builder --publish always creates the release if it
+            // didn't already exist, so by this point it's guaranteed to
+            // exist and we can edit the body without racing the publish.
+            const { data: rel } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag,
+            });
+            const marker = '### Installer SHA256';
+            const lines = [
+              marker,
+              '',
+              'Verify your download with `Get-FileHash <file> -Algorithm SHA256`.',
+              '',
+              '```',
+              `${ASSET_SHA256}  ${ASSET_NAME}`,
+              '```',
+            ].join('\n');
+            const body = (rel.body || '').includes(marker)
+              ? (rel.body || '')
+              : `${(rel.body || '').trimEnd()}\n\n${lines}\n`;
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: rel.id,
+              body,
+            });

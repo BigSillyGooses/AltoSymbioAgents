@@ -1,0 +1,30 @@
+# ── Dev / test dependencies — NEVER shipped to users ────────────────────────
+#
+# These are pulled in by:
+#   - .github/workflows/tests.yml (pytest + vulture + ts-prune + codegen)
+#   - local `cd backend && pytest tests/`
+#
+# They are NOT in requirements.txt (the lite bundle that ships in the
+# Electron installer) so the user-facing footprint stays at ~80 MB.
+#
+# Layer 4.1 (the discipline layer in the architectural plan): property
+# tests with hypothesis on the dataclass invariants Layers 1–3 introduced.
+# Without these gates, every refactor pressure on the orchestrator can
+# silently un-fix Bugs 4/5/6/7.
+
+pytest>=8.0.0,<10.0.0
+# pytest-asyncio supplies @pytest.mark.asyncio for tests/test_sse_events.py.
+# Previously misfiled under requirements.txt (the lite production bundle) — the
+# tests.yml gate masked the misfiling because it installs both files, but
+# release.yml only installs the package (`pip install .`) + this file, which
+# is how the broken v1.0.0 first attempt surfaced the gap.
+pytest-asyncio>=0.23.0,<2.0.0
+hypothesis>=6.100.0,<7.0.0
+httpx>=0.27.0,<0.30.0  # required by fastapi.testclient in route tests
+vulture>=2.10,<3.0    # Layer 4.2 dead-code gate
+# Layer C5: OpenAPI → TS codegen. The Python side dumps FastAPI's live
+# app.openapi() schema; openapi-typescript (Node, in package.json
+# devDependencies) translates it to a .d.ts. The CI codegen job fails
+# when re-running generate_api_types.py would change the output. No
+# Python-side codegen library is needed any more — FastAPI ships the
+# OpenAPI generator.

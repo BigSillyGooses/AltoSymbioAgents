@@ -1,0 +1,19 @@
+{
+  "llama_cpp": {
+    "repo": "ggml-org/llama.cpp",
+    "tag": "b9124",
+    "asset_pattern": "llama-{tag}-bin-win-vulkan-x64.zip",
+    "_notes": "Vulkan Windows x64 build. Vulkan covers NVIDIA, AMD, and Intel GPUs from a single binary; see Phase 3 for the n-gpu-layers wiring."
+  },
+  "whisper_cpp": {
+    "repo": "ggml-org/whisper.cpp",
+    "tag": "v1.8.4",
+    "_notes": "fetch_bundled_assets.py pattern-matches the Windows x64 asset name (substring 'bin'); tag pin is sufficient. The HuggingFace metadata lookup still points at 'ggerganov/whisper.cpp' because the HF model repo did not move when the GitHub source moved to ggml-org."
+  },
+  "piper": {
+    "repo": "rhasspy/piper",
+    "tag": "2023.11.14-2",
+    "asset_pattern": "piper_windows_amd64.zip",
+    "_notes": "rhasspy/piper was archived 2025-10-06. The 2023.11.14-2 release assets remain hosted on GitHub indefinitely. Active development continues at OHF-Voice/piper1-gpl, but that fork is GPL-licensed and would require a license review before adoption. Pin here is correct for v1; revisit for v2."
+  }
+}

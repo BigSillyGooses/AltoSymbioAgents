@@ -1,0 +1,92 @@
+appId: com.altosybioagents.app
+productName: altosybioagents
+copyright: Copyright © 2026 altosybioagents
+asar: true
+
+directories:
+  output: dist
+  buildResources: branding
+
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.{md,map,ts,tsx}"
+  - "!**/{tsconfig*,*.config.*,.eslintrc*}"
+
+extraResources:
+  # ── Sidecar source tree (Pinokio bootstrap) ────────────────────────────────
+  # The bootstrap flow (desktop-shell/bootstrap/sidecar_venv.ts) runs
+  # `pip install <process.resourcesPath>/sidecar` from this tree into the
+  # per-app venv at <userData>/bin/sidecar-venv. pyproject.toml's
+  # [project.scripts] generates Scripts/altosymbiosis-server.exe which
+  # desktop-shell/sidecar.ts spawns at runtime. Filter strips dev-only
+  # artifacts (caches, the legacy backend/.venv, build outputs, the test
+  # suite, the auxiliary requirements files) so the shipped resource tree
+  # is just what `pip install` needs.
+  - from: backend
+    to: sidecar
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!.venv/**"
+      - "!dist/**"
+      - "!build/**"
+      - "!*.egg-info/**"
+      - "!tests/**"
+      - "!*.spec"
+      - "!pytest.ini"
+      - "!requirements-dev.txt"
+      - "!requirements-bench.txt"
+
+  # ── App icon ───────────────────────────────────────────────────────────────
+  - from: branding/icon.png
+    to: icon.png
+
+  # NOTE: the legacy `branding/sidecar-bundle → backend` entry was removed in
+  # commit 5 of claude/pinokio-pipeline. It previously co-mingled two unrelated
+  # payloads:
+  #
+  #   * PyInstaller's server.exe + onedir layout (the FastAPI sidecar)
+  #     — superseded by the venv-based path above.
+  #   * Engine binaries (llama-server, whisper.cpp, piper) + their catalog
+  #     JSON — the engine portion stays bundled in the project, but moves
+  #     to a runtime download in the follow-up engine-download branch
+  #     (tracked at the "engine variant download wizard" issue). End users
+  #     on v1.0.0-test.2 are Claude-API-only; the engine wizard re-introduces
+  #     local engines via a UI-driven fetch into <userData>/bin/engines/.
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: branding/icon.png
+  artifactName: "${productName}-Setup-${version}.${ext}"
+  # publisherName must match the CN of the signing certificate exactly.
+  # electron-updater verifies the downloaded installer's publisher against
+  # this value, so it MUST be set only when a real code-signing certificate
+  # is wired in (win.certificateFile / certificateSubjectName / CSC_LINK).
+  # Otherwise auto-update will reject every release as publisher-mismatched.
+  # Re-add once a cert is in place.
+  # publisherName:
+  #   - altosybioagents
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: altosybioagents
+  uninstallDisplayName: altosybioagents
+  deleteAppDataOnUninstall: false
+
+publish:
+  provider: github
+  owner: zasonic
+  repo: AltoSymbiosisAgents
+  # Emit latest.yml alongside the NSIS installer so electron-updater can
+  # discover the new version. Defaults to true for the github provider, but
+  # making it explicit guards against a future electron-builder release
+  # silently flipping the default.
+  publishAutoUpdate: true
