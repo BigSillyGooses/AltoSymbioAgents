@@ -1,5 +1,64 @@
 # Handoff
 
+---
+## 🧭 CONSOLIDATION CARRY-OVER — 2026-05-29 (read this first)
+
+**This repo (`zasonic/AltoSymbioAgents`) is now the single canonical app.** Work
+on branch **`claude/dreamy-archimedes-28kTM`**.
+
+### Why this repo exists
+There were three divergent copies of the same application. They were compared:
+- **`AltoSymbiosisAgents`** — the most complete/recent copy (v1.0.0). **Chosen as the base.**
+- **`iMakeAiTeams`** — trailing; its only unique feature was **Power Mode** (Docker/OpenClaw execution). All 10 applicable bugs from its `CODEBASE_REVIEW_REPORT.md` were already fixed in the base; it added nothing else.
+- **`AltoSymbioAgents`** — was empty; **chosen by the owner as the canonical home**.
+
+### What was done this session
+1. **Seed** (`0af3741`): populated this repo from `AltoSymbiosisAgents` @ `09bd1a2`
+   (tracked tree only — the source was a shallow clone). **Power Mode was dropped**
+   (deliberately not carried over).
+2. **Improvement** (`4d8a7a7`): `desktop-ui/components/AgentPanel.tsx` now reads from
+   the shared `useAgents()` TanStack cache (`desktop-ui/components/chat/queries.ts`)
+   and invalidates `["agents"]` on create/edit/delete, so RosterPicker/ChatView
+   refresh live. Added `desktop-ui/components/AgentPanel.test.tsx`.
+
+### Verified green (all of it)
+| Frontend | Backend |
+|---|---|
+| vitest 169/169 · typecheck ✅ · ts-prune ✅ | pytest **742 passed**, 9 skipped, 13 deselected |
+| build ✅ · bundle-size +6.64% (≤10%) | vulture ✅ (no dead code) |
+
+### The other two repos are being retired
+Deprecation banners were pushed to their `claude/dreamy-archimedes-28kTM` branches
+(`AltoSymbiosisAgents` `5d3b99b`, `iMakeAiTeams` `ba831a8`), pointing here.
+**Still TODO (owner action):** merge those banners to each default branch, then
+**archive** both repos in GitHub → Settings (no archive API tool is available here).
+
+### Deferred / candidate next steps (none started)
+- **Internal rebrand** to `AltoSymbioAgents`: the package is still named
+  `altosybioagents` and the sidecar entry point is `altosymbiosis-server`
+  (`backend/pyproject.toml` `[project.scripts]`, referenced in
+  `desktop-shell/bootstrap/bin_manager.ts`).
+- **Decompose** `ChatView.tsx` (~2,158 LOC) and `chat_orchestrator.py` (~2,254 LOC).
+- **Orchestrator engine flip** `legacy → graph` (`backend/core/settings.py:244`):
+  GATED on two clean AgentDojo + agentic-misalignment bench runs — do not flip blind.
+- **`bin_manager.ts:44` `TODO(engines)`**: GATED on the engine-download feature; adding
+  the `existsSync` check now would block sidecar boot.
+
+### How to continue (set up + re-run the gates)
+```
+# Frontend
+npm ci && npm run test:frontend && npm run typecheck && npm run ts-prune \
+  && npm run build && npm run bundle-size
+# Backend
+cd backend && python3 -m venv .venv && . .venv/bin/activate \
+  && pip install -r requirements.txt -r requirements-dev.txt && pytest tests/ -q
+# Python dead-code gate
+vulture backend/services backend/models.py backend/db.py dev/vulture_allowlist.py --min-confidence 90
+```
+
+---
+## Earlier handoff (pre-consolidation — inherited from the AltoSymbiosisAgents source)
+
 **Latest on `main`:** `efa4c85` (Merge PR #25 — Stage-2 #9 settings toggle)
 **Branch:** `feat/visual-team-composer` · **Pushed:** pending
 **Status:** Stage-2 #10 — RosterPicker rewritten as a chip-card composer with auto-coordinator badge + shared TanStack cache.
