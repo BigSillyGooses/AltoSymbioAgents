@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 
+import { useQueryClient } from "@tanstack/react-query";
+
 import { Agents, type AgentPerformance } from "@/api/client";
+import { useAgents, queryKeys } from "@/components/chat/queries";
 import { useAppStore } from "@/stores/appStore";
 
 interface AgentRow {
@@ -42,30 +45,20 @@ const MODEL_PREFERENCES = [
 export function AgentPanel() {
   const ready = useAppStore((s) => s.sidecarStatus?.status === "ready");
   const pushToast = useAppStore((s) => s.pushToast);
-  const [agents, setAgents] = useState<AgentRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   // null = closed; "new" = create mode; agent id = edit mode.
   const [editing, setEditing] = useState<string | null>(null);
 
-  const reload = async () => {
-    try {
-      const rows = (await Agents.list()) as AgentRow[];
-      setAgents(rows ?? []);
-    } catch (err) {
-      pushToast({
-        kind: "error",
-        text: err instanceof Error ? err.message : "Could not load agents",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Agents come from the shared TanStack cache in chat/queries.ts that
+  // RosterPicker and ChatView read too. Creating, editing or deleting here
+  // invalidates that key so those views refresh live instead of holding a
+  // stale roster — the reason this panel no longer keeps its own copy.
+  const agentsQuery = useAgents({ enabled: ready });
+  const agents = (agentsQuery.data ?? []) as AgentRow[];
+  const loading = !ready || agentsQuery.isLoading;
 
-  useEffect(() => {
-    if (!ready) return;
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
+  const invalidateAgents = (): Promise<void> =>
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents() });
 
   const handleDelete = async (a: AgentRow) => {
     if (a.is_builtin) return;
@@ -76,7 +69,7 @@ export function AgentPanel() {
     try {
       await Agents.delete(a.id);
       pushToast({ kind: "success", text: `Deleted ${a.name}` });
-      await reload();
+      await invalidateAgents();
     } catch (err) {
       pushToast({
         kind: "error",
@@ -169,9 +162,9 @@ export function AgentPanel() {
         <AgentEditor
           agent={editing === "new" ? null : agents.find((a) => a.id === editing) ?? null}
           onClose={() => setEditing(null)}
-          onSaved={async () => {
+          onSaved={() => {
             setEditing(null);
-            await reload();
+            void invalidateAgents();
           }}
         />
       )}
