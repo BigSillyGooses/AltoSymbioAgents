@@ -98,6 +98,15 @@ class DomainError(Exception):
             message="prompt template not found",
         )
 
+    @classmethod
+    def design_system_not_found(cls, system_id: str = "") -> "DomainError":
+        return cls(
+            error_type="design_system_not_found",
+            status_code=404,
+            message="Design system not found",
+            hint=f"id={system_id}" if system_id else None,
+        )
+
     # ── 4xx — invalid input ──────────────────────────────────────────────
 
     @classmethod

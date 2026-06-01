@@ -344,3 +344,29 @@ describe("MessageRenderer speaker button (PR 17)", () => {
     expect(arg).not.toContain("`");
   });
 });
+
+describe("MessageRenderer — Design Studio artifacts", () => {
+  it("renders an embedded HTML artifact in a sandboxed iframe", () => {
+    const content =
+      "Here is your page.\n" +
+      '<artifact identifier="hero" type="text/html" title="Hero">' +
+      "<!doctype html><html><body><h1>Hi</h1></body></html></artifact>";
+    const { container } = render(
+      <MessageRenderer content={content} role="assistant" />,
+    );
+    const frame = container.querySelector("iframe");
+    expect(frame).not.toBeNull();
+    expect(frame?.getAttribute("sandbox")).toBe("allow-scripts");
+    expect(frame?.getAttribute("srcdoc")).toContain("<h1>Hi</h1>");
+    // The prose around the artifact still renders as markdown text.
+    expect(container.textContent).toContain("Here is your page.");
+  });
+
+  it("renders no iframe for an ordinary assistant message", () => {
+    const { container } = render(
+      <MessageRenderer content={"Just a normal **answer**."} role="assistant" />,
+    );
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(container.textContent).toContain("answer");
+  });
+});

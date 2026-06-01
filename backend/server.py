@@ -185,6 +185,7 @@ ROUTER_SPECS: tuple[tuple[str, str], ...] = (
     ("routes.rag", "/api/rag"),
     ("routes.models", "/api/models"),
     ("routes.settings", "/api/settings"),
+    ("routes.design", "/api/design"),
     ("routes.mcp", "/api/mcp"),
     ("routes.lifecycle", "/api/lifecycle"),
     ("routes.escalation", "/api/escalation"),

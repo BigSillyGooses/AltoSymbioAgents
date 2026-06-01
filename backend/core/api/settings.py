@@ -297,6 +297,28 @@ class SettingsAPI(BaseAPI):
                     # FIELD_METADATA so the field still renders.
                     pass
 
+            # Design Studio: enum options come from the vendored design-system
+            # catalog. Built here (not at module load) so the picker reflects
+            # the assets actually shipped, and grouped by category for a
+            # readable dropdown.
+            if key == "design_system_id":
+                try:
+                    from core import paths
+                    from services import design_assets
+                    systems = design_assets.list_design_systems(paths.design_assets_dir())
+                    entry["options"] = [
+                        {"value": "", "label": "— No brand system (craft rules only) —"},
+                    ] + [
+                        {
+                            "value": s["id"],
+                            "label": f"{s['title']} · {s['category']}",
+                        }
+                        for s in systems
+                    ]
+                except Exception:
+                    # Keep the static placeholder option from FIELD_METADATA.
+                    pass
+
             fields[key] = entry
 
         return {

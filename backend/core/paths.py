@@ -325,6 +325,22 @@ def bundled_server_binary() -> Path:
     return repo_root / "branding" / "sidecar-bundle" / "llama-server" / binary_name
 
 
+def design_assets_dir() -> Path:
+    """
+    Resolve the Design Studio asset root (vendored from Open Design).
+
+    Holds ``design-systems/<id>/DESIGN.md`` and ``craft/*.md`` consumed by
+    services/design_assets.py + services/design_studio.py. The tree is shipped
+    as ``core`` package-data, so — like ``core/templates`` and ``core/config``
+    — it sits next to this module in both source checkouts and frozen/pip
+    installs. ``Path(__file__).resolve().parent`` is the ``core`` package dir
+    in every layout (source, PyInstaller _MEIPASS, site-packages), so a single
+    resolution covers all of them. The returned path is read-only; callers must
+    tolerate it being absent (an incomplete build) and degrade gracefully.
+    """
+    return Path(__file__).resolve().parent / "assets" / "design"
+
+
 def voice_dir() -> Path:
     """Per-user root for downloaded voice assets (PR 17)."""
     d = user_dir() / "voice"

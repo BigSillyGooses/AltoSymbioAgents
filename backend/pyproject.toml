@@ -78,4 +78,8 @@ exclude = ["tests*"]
 # `Path(__file__).resolve().parent / "config" / "models.json"` resolve to
 # correctly from inside the `core` package. The original commit-5 TODO
 # about packaged-mode data files is therefore resolved at commit 3.
-core = ["templates/*", "config/*"]
+# assets/design/ holds the vendored Open Design catalog (design-systems/*/
+# DESIGN.md + craft/*.md) loaded by services/design_assets.py via
+# paths.design_assets_dir() (`Path(__file__).resolve().parent / "assets" /
+# "design"`). The recursive `**` glob (setuptools>=62) carries the whole tree.
+core = ["templates/*", "config/*", "assets/design/**/*"]
