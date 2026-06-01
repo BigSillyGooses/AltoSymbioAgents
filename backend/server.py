@@ -183,6 +183,7 @@ ROUTER_SPECS: tuple[tuple[str, str], ...] = (
     ("routes.agents", "/api/agents"),
     ("routes.memory", "/api/memory"),
     ("routes.rag", "/api/rag"),
+    ("routes.web", "/api/web"),
     ("routes.models", "/api/models"),
     ("routes.settings", "/api/settings"),
     ("routes.design", "/api/design"),

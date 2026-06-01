@@ -21,6 +21,7 @@ orchestrator from re-acquiring `_db._lock` in two different places.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -134,16 +135,20 @@ class TurnLifecycle:
         reply_text_for_storage = redact(response_text)
         resp_now = datetime.now(timezone.utc).isoformat()
         budget_warning = ""
+        web_sources_json = (
+            json.dumps(ctx.web_sources) if ctx.web_sources else None
+        )
 
         with _db.transaction() as conn:
             conn.execute(
                 "INSERT INTO messages (id, conversation_id, role, content, model_used, "
-                "route_reason, tokens_in, tokens_out, cost_usd, created_at) "
-                "VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?)",
+                "route_reason, tokens_in, tokens_out, cost_usd, created_at, "
+                "web_sources_json) "
+                "VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     asst_msg_id, ctx.conversation_id, reply_text_for_storage,
                     model_name, route_reason, tokens_in, tokens_out, cost,
-                    resp_now,
+                    resp_now, web_sources_json,
                 ),
             )
             conn.execute(

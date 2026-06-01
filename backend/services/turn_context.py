@@ -54,6 +54,14 @@ class TurnContext:
     turn_id:         str = ""
     started_at:      str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
+    # Web research provenance ────────────────────────────────────────────
+    # Set by ChatOrchestrator.send() from _maybe_autofetch_urls(): the pages
+    # actually fetched + indexed this turn, as [{"url", "title"}, …]. Read by
+    # TurnLifecycle.close() (and the team path) to persist on the assistant
+    # message so the source chips survive a reload. Empty when web research is
+    # off or nothing was fetched.
+    web_sources:     list = field(default_factory=list)
+
     # Budget bookkeeping (set by TurnLifecycle.open) ──────────────────────
     budget:          float = 0.0      # max_conversation_budget_usd at turn start
     warn_pct:        float = 0.0      # budget_warning_threshold_pct at turn start

@@ -157,6 +157,9 @@ class MemoryRecall:
             mcp_block = self._mcp_tool_block(agent)
             if mcp_block:
                 full_system += mcp_block
+        web_block = self._web_capability_block(agent)
+        if web_block:
+            full_system += web_block
         if guidance_block:
             full_system += guidance_block
         if design_block:
@@ -214,6 +217,45 @@ class MemoryRecall:
             f"You may ONLY use these tools: {tool_names}. "
             "Do not attempt to use any other tools or capabilities "
             "outside this list."
+        )
+
+    @staticmethod
+    def _agent_does_research(agent: Optional[dict]) -> bool:
+        """True if the agent's skills mark it as a research/web role."""
+        if not agent:
+            return False
+        try:
+            raw = agent.get("skills")
+            skills = json.loads(raw) if isinstance(raw, str) else raw
+            for s in (skills or []):
+                name = (s.get("name", "") if isinstance(s, dict) else str(s)).lower()
+                if "research" in name or "web" in name:
+                    return True
+        except Exception:  # noqa: BLE001
+            return False
+        return False
+
+    def _web_capability_block(self, agent: Optional[dict]) -> str:
+        """Tell a research agent that pasted/mentioned URLs get fetched + indexed.
+
+        Flag-gated on ``web_research_enabled`` and limited to research agents, so
+        a flag-off turn (or any non-research agent) is byte-identical to today.
+        Describes the automatic behavior in plain language — there is no syntax
+        for the user or the agent to learn.
+        """
+        try:
+            if not self._settings.get("web_research_enabled", False):
+                return ""
+        except Exception:  # noqa: BLE001
+            return ""
+        if not self._agent_does_research(agent):
+            return ""
+        return (
+            "\n\n## Web research\n"
+            "When the user shares or asks about a web page, its contents are "
+            "automatically fetched and added to your knowledge base, then "
+            "retrieved alongside your other sources. Use that material to answer "
+            "and refer to the page by name when you do."
         )
 
     def _mcp_tool_block(self, agent: dict) -> str:

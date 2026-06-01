@@ -358,6 +358,23 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     # registry itself reads server folders from paths.mcp_servers_dir()).
     "mcp_servers_disabled":          ((list, type(None)), []),
 
+    # Web research (services/web_research.py + core/api/web.py). Master gate is
+    # OFF by default: with it off, no fetch path runs and the UI hides the
+    # feature. ``auto_fetch`` lets the orchestrator fetch URLs a user mentions;
+    # ``allow_stealth`` opts into the heavy browser engine (downloaded out of
+    # band). Domain lists are optional allow/block filters (empty allow = allow
+    # all public). Timeout/size are clamped to hard ceilings in web_research.
+    "web_research_enabled":          (bool, False),
+    "web_research_auto_fetch":       (bool, False),
+    "web_research_allow_stealth":    (bool, False),
+    "web_research_allowed_domains":  ((list, type(None)), []),
+    "web_research_blocked_domains":  ((list, type(None)), []),
+    # Secure-by-default: refuse loopback / LAN / metadata targets (SSRF guard).
+    # Turn on only to deliberately index an internal/localhost server.
+    "web_research_allow_private":     (bool, False),
+    "web_research_timeout_s":        (int,  20),
+    "web_research_max_bytes":        (int,  2_000_000),
+
     # Phase 3: Qwen3 hybrid thinking. Per-agent budget overrides live on the
     # agents table; this is the global ceiling enforced for any agent.
     "qwen_thinking_global_budget_cap": (int, 8192),
@@ -865,6 +882,20 @@ FIELD_METADATA: dict[str, dict] = {
         "unit":        "chars",
         "min":         0,
         "max":         1000,
+    },
+
+    # ── Web research ──────────────────────────────────────────────────────────
+    "web_research_enabled": {
+        "label":       "Let agents look things up on the web",
+        "description": "When on, the Researcher can read public web pages you mention and use them to answer.",
+        "type":        "bool",
+        "group":       "rag",
+    },
+    "web_research_auto_fetch": {
+        "label":       "Fetch links automatically",
+        "description": "Open and read web links you paste into chat without being asked.",
+        "type":        "bool",
+        "group":       "rag",
     },
 
     # ── Memory ────────────────────────────────────────────────────────────────

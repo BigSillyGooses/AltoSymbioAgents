@@ -84,6 +84,7 @@ from .chat import ChatAPI
 from .agents import AgentsAPI
 from .memory import MemoryAPI
 from .rag import RagAPI
+from .web import WebAPI
 from .settings import SettingsAPI
 from .mcp import MCPAPI
 from .lifecycle import LifecycleAPI
@@ -227,6 +228,7 @@ class API:
         self._agents_api = AgentsAPI(self)
         self._memory_api = MemoryAPI(self)
         self._rag_api = RagAPI(self)
+        self._web_api = WebAPI(self)
         self._settings_api = SettingsAPI(self)
         self._mcp_api = MCPAPI(self)
         self._lifecycle_api = LifecycleAPI(self)
@@ -964,6 +966,18 @@ class API:
 
     def bm25_corpus_size(self):
         return self._rag_api.bm25_corpus_size()
+
+    # Web research
+    def web_status(self):
+        return self._web_api.web_status()
+
+    async def web_fetch(self, url, use_stealth=False):
+        return await self._web_api.web_fetch(url, use_stealth=use_stealth)
+
+    async def web_fetch_to_rag(self, url, source="", use_stealth=False):
+        return await self._web_api.web_fetch_to_rag(
+            url, source=source, use_stealth=use_stealth,
+        )
 
     # Settings
     def get_settings(self):

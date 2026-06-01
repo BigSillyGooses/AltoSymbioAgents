@@ -160,13 +160,17 @@ class RAGIndex:
             return 0
         return self.add_text(content, source=str(file_path))
 
-    def add_text(self, text: str, source: str = "manual") -> int:
+    def add_text(self, text: str, source: str = "manual", doc_type: str = "file") -> int:
         """Add arbitrary text to the index. Returns number of chunks added.
 
         Each chunk is scrubbed of structural credential patterns before being
         handed to the indexer. The original text on the filesystem is left
         untouched — only the indexed copy gets redacted, so embeddings and
         retrieval results never carry an API key or token.
+
+        ``doc_type`` defaults to ``"file"`` (unchanged for every existing
+        caller); web ingestion passes ``"web"`` so fetched pages are
+        distinguishable in hybrid search filters.
         """
         if not text.strip():
             return 0
@@ -182,7 +186,7 @@ class RAGIndex:
                 ss.ingest_document(
                     content=redact(header + chunk),
                     source=source,
-                    doc_type="file",
+                    doc_type=doc_type,
                 )
                 count += 1
             except Exception as exc:

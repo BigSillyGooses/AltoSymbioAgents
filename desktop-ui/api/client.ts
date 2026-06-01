@@ -639,6 +639,39 @@ export const Rag = {
     api.post<unknown[]>("/api/rag/search_hybrid", { query, top_k, method, doc_type }),
 };
 
+export interface WebStatus {
+  available: boolean;
+  stealth_available: boolean;
+  enabled: boolean;
+}
+
+interface WebFetchToRagResult {
+  chunks_added?: number;
+  url?: string;
+  title?: string;
+  truncated?: boolean;
+  error?: string;
+  reason?: string;
+}
+
+export const Web = {
+  status: () => api.get<WebStatus>("/api/web/status"),
+  fetch: (url: string, use_stealth = false) =>
+    api.post<{
+      url?: string;
+      title?: string;
+      markdown?: string;
+      text?: string;
+      status?: number;
+      engine?: string;
+      truncated?: boolean;
+      error?: string;
+      reason?: string;
+    }>("/api/web/fetch", { url, use_stealth }),
+  fetchToRag: (url: string, source = "", use_stealth = false) =>
+    api.post<WebFetchToRagResult>("/api/web/fetch_to_rag", { url, source, use_stealth }),
+};
+
 export interface McpServerSummary {
   server_id: string;
   name: string;

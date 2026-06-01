@@ -1055,6 +1055,16 @@ _MIGRATIONS = [
         "ALTER TABLE messages ADD COLUMN pipeline_steps_json TEXT",
     ]),
 
+    # ── Web research provenance: persist the pages a turn drew from ──────────
+    # The Researcher's auto-fetch indexes live pages into RAG; this column
+    # records which pages (final URL + title) backed a given assistant reply
+    # as a JSON list of {"url", "title"}. Lets the source chips survive a
+    # reload instead of living only in the ephemeral live event stream. NULL
+    # for turns that fetched nothing (the default) and for legacy rows.
+    ("web_sources.1.0", [
+        "ALTER TABLE messages ADD COLUMN web_sources_json TEXT",
+    ]),
+
     # ── Phase 4 (per-team tool restrictions): union dispatcher input ─────────
     # Each agent has its own allowed_tools list. A team-scoped allowed_tools
     # column lets the user further intersect the union at dispatch time —

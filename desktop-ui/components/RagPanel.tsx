@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { Memory, Rag } from "@/api/client";
+import { Memory, Rag, Web, type WebStatus } from "@/api/client";
 import { useAppStore } from "@/stores/appStore";
 
 interface RagStatus {
@@ -17,6 +17,9 @@ export function RagPanel() {
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<unknown[]>([]);
+  const [webStatus, setWebStatus] = useState<WebStatus | null>(null);
+  const [webUrl, setWebUrl] = useState("");
+  const [webBusy, setWebBusy] = useState(false);
 
   useEffect(() => {
     if (!ready) return;
@@ -24,7 +27,34 @@ export function RagPanel() {
     Memory.semanticAvailable()
       .then(({ available }) => setAvailable(available))
       .catch(() => setAvailable(false));
+    Web.status().then(setWebStatus).catch(() => setWebStatus(null));
   }, [ready]);
+
+  const addWebPage = async () => {
+    const url = webUrl.trim();
+    if (!url) return;
+    setWebBusy(true);
+    try {
+      const res = await Web.fetchToRag(url);
+      if (res.error) {
+        pushToast({ kind: "error", text: res.error });
+      } else {
+        pushToast({
+          kind: "success",
+          text: `Added “${res.title || url}” to your knowledge base`,
+        });
+        setWebUrl("");
+        setStatus((await Rag.status()) as RagStatus);
+      }
+    } catch (err) {
+      pushToast({
+        kind: "error",
+        text: err instanceof Error ? err.message : "Couldn't add that page",
+      });
+    } finally {
+      setWebBusy(false);
+    }
+  };
 
   const indexFolder = async () => {
     const folder = await window.electronAPI.selectFolder();
@@ -103,6 +133,45 @@ export function RagPanel() {
             Clear
           </button>
         </div>
+      </div>
+
+      <div className="card mb-4">
+        <h3 className="font-semibold mb-2">Web pages</h3>
+        {webStatus && !webStatus.available && (
+          <p className="text-sm text-ink-dim">
+            Web research isn’t available in this build.
+          </p>
+        )}
+        {webStatus && webStatus.available && !webStatus.enabled && (
+          <p className="text-sm text-ink-dim">
+            Turn on “Let agents look things up on the web” in Settings to add
+            web pages to your knowledge base.
+          </p>
+        )}
+        {webStatus && webStatus.available && webStatus.enabled && (
+          <>
+            <p className="text-sm text-ink-dim mb-2">
+              Paste a link to read a page and add it to your knowledge base.
+            </p>
+            <div className="flex gap-2">
+              <input
+                className="input"
+                value={webUrl}
+                onChange={(e) => setWebUrl(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !webBusy && addWebPage()}
+                placeholder="https://example.com/article"
+                disabled={!ready || webBusy}
+              />
+              <button
+                className="btn-primary"
+                onClick={addWebPage}
+                disabled={!ready || webBusy || !webUrl.trim()}
+              >
+                {webBusy ? "Reading…" : "Add page"}
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="card">

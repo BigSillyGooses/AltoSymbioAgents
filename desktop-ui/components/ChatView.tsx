@@ -20,6 +20,7 @@ import {
   Models,
   PromptTemplates,
   Settings,
+  System,
   Teams,
   Voice,
   type Attachment,
@@ -42,6 +43,12 @@ import {
   type PipelineLive,
   type PipelinePhase,
 } from "@/components/chat/derivePipelineLive";
+import {
+  deriveWebFetches,
+  hostLabel,
+  type WebFetchesLive,
+} from "@/components/chat/deriveWebFetches";
+import { WebSourceChips } from "@/components/chat/WebSourceChips";
 import { Timeline, type TimelineVariant } from "@/components/chat/Timeline";
 import { useRoster } from "@/components/chat/useRoster";
 import {
@@ -69,6 +76,7 @@ type ChatItem =
       steps: PipelineStep[];
       phase: PipelinePhase;
       timeline: ThinkingRow[];
+      webFetches: WebFetchesLive;
     };
 
 interface ChatRowData {
@@ -965,6 +973,10 @@ export function ChatView() {
     () => (streamingEvents ? deriveThinkingTimeline(streamingEvents) : []),
     [streamingEvents],
   );
+  const webFetches = useMemo<WebFetchesLive>(
+    () => (streamingEvents ? deriveWebFetches(streamingEvents) : { active: null, sources: [] }),
+    [streamingEvents],
+  );
   const activeConversation = useMemo(
     () => conversations.find((c) => c.id === activeId),
     [conversations, activeId],
@@ -985,7 +997,8 @@ export function ChatView() {
     const hasLivePipeline =
       pipelineLive.phase !== "idle" && pipelineLive.phase !== "complete";
     const hasTimeline = thinkingTimeline.length > 0;
-    if (streamingBuffer || hasLivePipeline || hasTimeline) {
+    const hasWebFetch = webFetches.active !== null || webFetches.sources.length > 0;
+    if (streamingBuffer || hasLivePipeline || hasTimeline || hasWebFetch) {
       xs.push({
         kind: "stream",
         key: "stream",
@@ -993,10 +1006,11 @@ export function ChatView() {
         steps: pipelineLive.steps,
         phase: pipelineLive.phase,
         timeline: thinkingTimeline,
+        webFetches,
       });
     }
     return xs;
-  }, [messages, streamingBuffer, pipelineLive, thinkingTimeline]);
+  }, [messages, streamingBuffer, pipelineLive, thinkingTimeline, webFetches]);
 
   // Per-row measured heights so VariableSizeList can render only the rows
   // that fit the viewport. Heights start as estimates and snap to the real
@@ -1813,6 +1827,7 @@ function ChatListRow({ index, style, data }: ListChildComponentProps<ChatRowData
                 phase={item.phase}
               />
             )}
+            <WebFetchStatus webFetches={item.webFetches} />
             {item.timeline.length > 0 && (
               <Timeline rows={item.timeline} variant={data.timelineVariant} />
             )}
@@ -1851,6 +1866,33 @@ function ChatListRow({ index, style, data }: ListChildComponentProps<ChatRowData
 }
 
 // MessageBubble extracted to components/chat/MessageBubble.tsx (Layer C2).
+
+// ── Web research: live "Reading…" status + source chips ─────────────────────
+//
+// Driven by the `web_fetch` SSE events the backend emits while the orchestrator
+// auto-fetches URLs a user mentioned. Shows a friendly fetching line and, once
+// pages land, clickable source chips so the user sees where an answer's
+// material came from — no technical detail.
+
+function WebFetchStatus({ webFetches }: { webFetches: WebFetchesLive }) {
+  const { active, sources } = webFetches;
+  if (!active && sources.length === 0) return null;
+  return (
+    <div className="mb-1 text-xs" data-testid="web-fetch-status">
+      {active && (
+        <div className="flex items-center gap-1 text-ink-faint italic">
+          <span aria-hidden>🔎</span>
+          <span>Reading {hostLabel(active)}…</span>
+        </div>
+      )}
+      {sources.length > 0 && (
+        <div className="mt-1">
+          <WebSourceChips sources={sources} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Phase 3: in-flight team-pipeline attribution ────────────────────────────
 //

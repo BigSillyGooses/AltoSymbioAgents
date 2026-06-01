@@ -15,6 +15,8 @@ import { useState } from "react";
 
 import { MessageRenderer } from "@/components/MessageRenderer";
 import { MessageErrorBoundary } from "@/components/MessageErrorBoundary";
+import { WebSourceChips } from "@/components/chat/WebSourceChips";
+import { hostLabel, type WebSource } from "@/components/chat/deriveWebFetches";
 
 export interface PipelineStep {
   step:               number;
@@ -34,6 +36,7 @@ export interface MessageRow {
   model_used?:     string;
   cost_usd?:       number;
   pipeline_steps?: PipelineStep[] | string | null;
+  web_sources?:    WebSource[] | string | null;
 }
 
 interface MessageBubbleProps {
@@ -55,8 +58,34 @@ function _parsePipelineSteps(raw: MessageRow["pipeline_steps"]): PipelineStep[] 
   return [];
 }
 
+// Mirror of _parsePipelineSteps for the persisted web-research provenance.
+// The backend stores web sources as a JSON string column but the renderer
+// wants the WebSource[] the live bubble already uses; accept either shape and
+// normalize a missing title to the host so a chip always has a label.
+function _parseWebSources(raw: MessageRow["web_sources"]): WebSource[] {
+  let list: unknown = raw;
+  if (typeof raw === "string") {
+    if (!raw) return [];
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((s): s is { url: string; title?: string } =>
+      !!s && typeof (s as { url?: unknown }).url === "string",
+    )
+    .map((s) => ({
+      url: s.url,
+      title: (s.title || "").trim() || hostLabel(s.url),
+    }));
+}
+
 export function MessageBubble({ msg, voiceOutputEnabled }: MessageBubbleProps) {
   const steps = _parsePipelineSteps(msg.pipeline_steps);
+  const webSources = _parseWebSources(msg.web_sources);
   return (
     <div
       className={`max-w-[80%] rounded-xl px-4 py-2 text-sm ${
@@ -73,6 +102,12 @@ export function MessageBubble({ msg, voiceOutputEnabled }: MessageBubbleProps) {
           voiceOutputEnabled={voiceOutputEnabled}
         />
       </MessageErrorBoundary>
+      {webSources.length > 0 && (
+        <div className="mt-2 text-xs" data-testid="message-web-sources">
+          <div className="mb-1 text-ink-faint">Sources</div>
+          <WebSourceChips sources={webSources} />
+        </div>
+      )}
       {msg.model_used && (
         <div className="text-[11px] text-ink-faint mt-2">
           {msg.model_used}

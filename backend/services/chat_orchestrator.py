@@ -273,7 +273,36 @@ class ChatOrchestrator:
             "ORDER BY created_at ASC LIMIT ?",
             (conversation_id, limit),
         )
-        return [dict(r) for r in rows]
+        return [self._decode_message_row(dict(r)) for r in rows]
+
+    @staticmethod
+    def _decode_message_row(row: dict) -> dict:
+        """Parse the persisted ``*_json`` columns into the clean fields the
+        renderer expects.
+
+        The renderer reads ``pipeline_steps`` and ``web_sources``, but the DB
+        stores them as ``pipeline_steps_json`` / ``web_sources_json`` strings —
+        so without this decode step the persisted pipeline chips and source
+        chips never reach the UI (they only appeared in the live event stream
+        and vanished on reload). Best-effort: a NULL or malformed value decodes
+        to ``[]`` rather than raising, so one bad row can't 500 the history
+        fetch. The raw ``*_json`` keys are left in place for any other reader.
+        """
+        for json_key, clean_key in (
+            ("pipeline_steps_json", "pipeline_steps"),
+            ("web_sources_json", "web_sources"),
+        ):
+            raw = row.get(json_key)
+            parsed: list = []
+            if raw:
+                try:
+                    decoded = json.loads(raw)
+                    if isinstance(decoded, list):
+                        parsed = decoded
+                except (ValueError, TypeError):
+                    parsed = []
+            row[clean_key] = parsed
+        return row
 
     def list_conversations(self, limit: int = 30) -> list[dict]:
         rows = _db.fetchall(
@@ -590,6 +619,58 @@ class ChatOrchestrator:
                 continue
             chunks.append(f"[{r['filename']}]\n{extract}")
         return chunks
+
+    def _maybe_autofetch_urls(self, user_message: str, emit_event) -> list[dict]:
+        """Fetch + index URLs in the user's message when web research is on.
+
+        Gated on ``web_research_enabled`` + ``web_research_auto_fetch`` (both
+        default off). Best-effort: every failure is swallowed so a bad URL can
+        never break the turn. Emits ``web_fetch`` status so the UI timeline can
+        show "Reading <site>…".
+
+        Returns the list of successfully fetched sources as
+        ``[{"url", "title"}, …]`` (deduped by final URL, already capped at 3 by
+        ``extract_urls``). The caller stashes this on the TurnContext so it can
+        be persisted on the assistant message — letting the source chips survive
+        a reload instead of vanishing with the live event stream. Flag-off or no
+        successful fetch returns ``[]``, so a flag-off turn is byte-identical.
+        """
+        sources: list[dict] = []
+        try:
+            if not self._settings.get("web_research_enabled", False):
+                return sources
+            if not self._settings.get("web_research_auto_fetch", False):
+                return sources
+        except Exception:  # noqa: BLE001
+            return sources
+
+        from services import web_research
+
+        rag = getattr(self.memory, "rag", None)
+        if rag is None:
+            return sources
+        seen: set[str] = set()
+        for url in web_research.extract_urls(user_message, limit=3):
+            try:
+                emit_event("web_fetch", {"status": "fetching", "url": url})
+                result = web_research.fetch_and_index(url, rag=rag, settings=self._settings)
+                if result.get("error"):
+                    emit_event("web_fetch", {"status": "error", "url": url, "error": result["error"]})
+                else:
+                    final_url = result.get("url", url)
+                    emit_event("web_fetch", {
+                        "status": "done", "url": final_url,
+                        "title": result.get("title", ""),
+                    })
+                    if final_url not in seen:
+                        seen.add(final_url)
+                        sources.append({
+                            "url": final_url,
+                            "title": result.get("title", "") or final_url,
+                        })
+            except Exception as exc:  # noqa: BLE001 — never break the turn
+                log.debug("auto-fetch failed for %s: %s", url, exc)
+        return sources
 
     @staticmethod
     def _fetch_image_attachments(conversation_id: str) -> list[dict]:
@@ -1283,6 +1364,13 @@ class ChatOrchestrator:
                 image_attachments = self._fetch_image_attachments(conversation_id)
             except Exception as exc:
                 log.debug("image attachment fetch failed: %s", exc)
+
+        # Web research auto-fetch: if enabled, fetch any URL the user mentioned
+        # and index it BEFORE recall, so the freshly-added page is available to
+        # this same turn's RAG retrieval. Best-effort and flag-gated — a flag-off
+        # turn is unchanged, and any fetch failure is swallowed so the turn
+        # always proceeds (fail-open UX, fail-closed security in web_research).
+        ctx.web_sources = self._maybe_autofetch_urls(user_message, _emit_event)
 
         # Recall memory + build system context. Layer 3: MemoryRecall
         # owns the get_context call, the mem_suffix stitching, the tool
@@ -2029,6 +2117,19 @@ class ChatOrchestrator:
         ]
         history = self._trim_history_to_budget(history)
 
+        # Web research auto-fetch (mirrors the solo path): index any URL the
+        # user mentioned before the team runs, so the freshly-added page is
+        # available to the pipeline's RAG retrieval, and remember the sources
+        # so they persist on the synthesized reply. Flag-gated + best-effort.
+        def _safe_emit(event_type: str, data: dict) -> None:
+            if on_event:
+                try:
+                    on_event(event_type, data)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        web_sources = self._maybe_autofetch_urls(user_message, _safe_emit)
+
         executor = PipelineExecutor(
             self.hub_router, self._settings,
             claude_client=self.claude, local_client=self.local,
@@ -2066,15 +2167,18 @@ class ChatOrchestrator:
         steps_json = (
             json.dumps(result.steps) if result.steps else None
         )
+        web_sources_json = (
+            json.dumps(web_sources) if web_sources else None
+        )
         _db.execute(
             "INSERT INTO messages (id, conversation_id, role, content, model_used, "
             "route_reason, tokens_in, tokens_out, cost_usd, created_at, "
-            "pipeline_steps_json) "
-            "VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?)",
+            "pipeline_steps_json, web_sources_json) "
+            "VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 asst_msg_id, conversation_id, redact(synthesis), "pipeline",
                 route_reason, result.total_tokens_in, result.total_tokens_out,
-                cost, resp_now, steps_json,
+                cost, resp_now, steps_json, web_sources_json,
             ),
         )
         _db.execute(

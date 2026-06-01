@@ -50,6 +50,21 @@ keyring>=24.0.0
 # lists-of-objects) in services/design_skills.py. Pure-Python, tiny.
 PyYAML>=6.0
 
+# ── Web research (HTTP-only, lean) ──────────────────────────────────────────
+# Live web fetch for the Researcher agent (services/web_research.py). We use
+# curl_cffi (the HTTP engine Scrapling's Fetcher wraps) for the request and
+# Scrapling's parser-only Selector for extraction. All four ship as prebuilt
+# wheels, so the lean bundle stays lean.
+#
+# IMPORTANT: we deliberately do NOT depend on scrapling[fetchers] — that pulls
+# Playwright (hundreds of MB of browsers) which would break the lite bundle.
+# scrapling.fetchers imports Playwright at module load, so web_research never
+# imports it on the default path. The browser/stealth engine is an OPT-IN
+# capability the user installs out-of-band; it is not shipped here.
+curl_cffi>=0.7,<1.0
+scrapling>=0.4.8,<0.5.0
+markdownify>=0.13,<2.0
+
 # ── Multi-provider LLM adapter (BYO-key path) ───────────────────────────────
 # LiteLLM normalises 100+ provider APIs (OpenAI / Gemini / Groq / Mistral /
 # DeepSeek / Grok / Cohere / Ollama, etc.) behind a single OpenAI-compatible
