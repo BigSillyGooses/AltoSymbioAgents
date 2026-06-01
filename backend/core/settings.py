@@ -345,6 +345,11 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     # the asset loader, like ``default_agent_id``.
     "design_studio_enabled":         (bool,  False),
     "design_system_id":              (str,   ""),
+    # Optional skill (folder name under core/assets/design/skills/) selecting
+    # the artifact workflow — landing page, dashboard, deck, etc. Empty = the
+    # general designer directive only. Options filled dynamically from the
+    # vendored skills catalog, like ``design_system_id``.
+    "design_skill_id":               (str,   ""),
 
     # Agent / project
     "agent_project_root":            (str,   ""),
@@ -813,6 +818,13 @@ FIELD_METADATA: dict[str, dict] = {
         # vendored design-system catalog — a single blank default here so the
         # renderer always has something to show.
         "options":     [{"value": "", "label": "— No brand system (craft rules only) —"}],
+    },
+    "design_skill_id": {
+        "label":       "Skill",
+        "description": "Artifact workflow the agent follows (landing page, dashboard, deck…). Leave blank for the general designer directive.",
+        "type":        "enum",
+        "group":       "design",
+        "options":     [{"value": "", "label": "— General (no specific skill) —"}],
     },
 
     # ── Updates ───────────────────────────────────────────────────────────────

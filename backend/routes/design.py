@@ -19,7 +19,7 @@ from fastapi import APIRouter
 
 from core import paths
 from core.errors import DomainError
-from services import design_assets
+from services import design_assets, design_skills
 
 router = APIRouter()
 
@@ -52,3 +52,17 @@ async def get_system(system_id: str) -> dict:
         "surface": meta["surface"] if meta else "web",
         "body": body,
     }
+
+
+@router.get("/skills")
+async def list_skills() -> dict:
+    skills = design_skills.list_skills(paths.design_assets_dir())
+    return {"skills": skills}
+
+
+@router.get("/skills/{skill_id}")
+async def get_skill(skill_id: str) -> dict:
+    skill = design_skills.read_skill(paths.design_assets_dir(), skill_id)
+    if skill is None:
+        raise DomainError.design_skill_not_found(skill_id)
+    return skill

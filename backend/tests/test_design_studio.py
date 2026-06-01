@@ -8,7 +8,7 @@ linear-app DESIGN.md + craft rules (no synthetic fixtures).
 from __future__ import annotations
 
 from core import paths
-from services import design_assets, design_studio
+from services import design_assets, design_skills, design_studio
 
 
 class _FakeSettings:
@@ -84,3 +84,65 @@ class TestBuildDesignBlock:
         # No brand body resolved, but the directive + craft still apply.
         assert "Design Studio mode" in block
         assert "Active design system" not in block
+
+
+class TestSkillInjection:
+    def test_compose_orders_skill_after_craft_with_assets(self):
+        root = paths.design_assets_dir()
+        body, craft = _real_inputs()
+        skill = design_skills.read_skill(root, "web-prototype")
+        prompt = design_studio.compose_design_prompt(
+            design_system_body=body,
+            design_system_title="Linear",
+            craft_body=craft,
+            skill_body=skill["body"],
+            skill_name=skill["name"],
+            skill_assets=skill["assets"],
+        )
+        i_design = prompt.find("Active design system")
+        i_craft = prompt.find("Craft references")
+        i_skill = prompt.find("Active skill")
+        i_assets = prompt.find("Skill assets (inlined)")
+        assert -1 < i_design < i_craft < i_skill < i_assets
+
+    def test_build_block_with_skill_injects_workflow_and_seed(self):
+        s = _FakeSettings(
+            {
+                "design_studio_enabled": True,
+                "design_system_id": "linear-app",
+                "design_skill_id": "web-prototype",
+            }
+        )
+        block = design_studio.build_design_block(s)
+        assert "Active skill — web-prototype" in block
+        assert "### assets/template.html" in block
+        assert "#5e6ad2" in block  # brand token still present
+
+    def test_skill_craft_requires_drives_craft_selection(self):
+        # saas-landing declares od.craft.requires → the craft header carries
+        # the explicit section list. web-prototype declares none → default set
+        # with no section-label suffix. This distinguishes the two code paths.
+        with_skill = design_studio.build_design_block(
+            _FakeSettings(
+                {"design_studio_enabled": True, "design_skill_id": "saas-landing"}
+            )
+        )
+        assert "Craft references — typography, color, anti-ai-slop" in with_skill
+
+        default_craft = design_studio.build_design_block(
+            _FakeSettings(
+                {"design_studio_enabled": True, "design_skill_id": "web-prototype"}
+            )
+        )
+        # Default craft set: header has no " — <sections>" suffix.
+        assert "Craft references\n" in default_craft
+        assert "Craft references — " not in default_craft
+
+    def test_unknown_skill_id_falls_back_to_directive(self):
+        block = design_studio.build_design_block(
+            _FakeSettings(
+                {"design_studio_enabled": True, "design_skill_id": "no-such-skill"}
+            )
+        )
+        assert "Design Studio mode" in block
+        assert "Active skill" not in block

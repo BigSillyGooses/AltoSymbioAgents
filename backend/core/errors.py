@@ -107,6 +107,15 @@ class DomainError(Exception):
             hint=f"id={system_id}" if system_id else None,
         )
 
+    @classmethod
+    def design_skill_not_found(cls, skill_id: str = "") -> "DomainError":
+        return cls(
+            error_type="design_skill_not_found",
+            status_code=404,
+            message="Design skill not found",
+            hint=f"id={skill_id}" if skill_id else None,
+        )
+
     # ── 4xx — invalid input ──────────────────────────────────────────────
 
     @classmethod

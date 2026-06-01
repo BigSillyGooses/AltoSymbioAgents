@@ -26,7 +26,7 @@ import logging
 from typing import Optional
 
 from core import paths
-from services import design_assets
+from services import design_assets, design_skills
 
 log = logging.getLogger("altosybioagents.design_studio")
 
@@ -76,12 +76,20 @@ def compose_design_prompt(
     design_system_title: Optional[str] = None,
     craft_body: Optional[str] = None,
     craft_sections: Optional[list[str]] = None,
+    skill_body: Optional[str] = None,
+    skill_name: Optional[str] = None,
+    skill_assets: Optional[str] = None,
 ) -> str:
     """Compose the Design Studio system-prompt block.
 
     Returns ``""`` when there is nothing to contribute (no directive needed).
     The directive is always included so the agent knows the output contract;
-    DESIGN.md and craft are appended only when present.
+    DESIGN.md, craft, and the active skill are appended only when present.
+
+    Ordering mirrors Open Design: directive → DESIGN.md (authoritative tokens)
+    → craft (universal rules) → skill workflow (+ inlined seed/references).
+    The skill goes last so its concrete workflow/seed wins over the general
+    directive, while brand tokens above still bind the palette.
     """
     parts: list[str] = [_DESIGNER_DIRECTIVE]
 
@@ -108,6 +116,17 @@ def compose_design_prompt(
             "accent overuse caps, anti-AI-slop patterns).\n\n"
             f"{craft_body.strip()}"
         )
+
+    if skill_body and skill_body.strip():
+        name_suffix = f" — {skill_name}" if skill_name else ""
+        parts.append(
+            f"\n\n## Active skill{name_suffix}\n\n"
+            "Follow this skill's workflow exactly. It is more specific than the "
+            "general directive above and wins where they overlap.\n\n"
+            f"{skill_body.strip()}"
+        )
+        if skill_assets and skill_assets.strip():
+            parts.append(f"\n\n{skill_assets.strip()}")
 
     return "".join(parts)
 
@@ -137,12 +156,33 @@ def build_design_block(settings) -> str:
                 )
                 design_system_title = meta["title"] if meta else None
 
-        craft_body = design_assets.read_craft(root)
+        # Active skill (optional). Its craft.requires selects which craft
+        # sections inject; with no skill (or none declared) we fall back to the
+        # universal default set.
+        skill_body: Optional[str] = None
+        skill_name: Optional[str] = None
+        skill_assets: Optional[str] = None
+        craft_requires: Optional[list[str]] = None
+        skill_id = (settings.get("design_skill_id", "") or "").strip()
+        if skill_id:
+            skill = design_skills.read_skill(root, skill_id)
+            if skill:
+                skill_body = skill["body"]
+                skill_name = skill["name"]
+                skill_assets = skill["assets"]
+                if skill["craft_requires"]:
+                    craft_requires = skill["craft_requires"]
+
+        craft_body = design_assets.read_craft(root, craft_requires)
 
         block = compose_design_prompt(
             design_system_body=design_system_body,
             design_system_title=design_system_title,
             craft_body=craft_body,
+            craft_sections=craft_requires,
+            skill_body=skill_body,
+            skill_name=skill_name,
+            skill_assets=skill_assets,
         )
         if not block:
             return ""

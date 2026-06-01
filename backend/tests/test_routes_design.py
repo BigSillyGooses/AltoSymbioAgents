@@ -61,3 +61,26 @@ class TestGetSystem:
         resp = client.get("/api/design/systems/no-such-brand", headers=_headers())
         assert resp.status_code == 404
         assert resp.json()["error_type"] == "design_system_not_found"
+
+
+class TestSkills:
+    def test_list_skills(self, client):
+        resp = client.get("/api/design/skills", headers=_headers())
+        assert resp.status_code == 200
+        skills = resp.json()["skills"]
+        assert len(skills) > 40
+        wp = next(s for s in skills if s["id"] == "web-prototype")
+        assert wp["mode"] == "prototype"
+
+    def test_get_skill_returns_body_and_assets(self, client):
+        resp = client.get("/api/design/skills/web-prototype", headers=_headers())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == "web-prototype"
+        assert body["body"].startswith("# Web Prototype Skill")
+        assert "### assets/template.html" in body["assets"]
+
+    def test_unknown_skill_is_typed_404(self, client):
+        resp = client.get("/api/design/skills/no-such-skill", headers=_headers())
+        assert resp.status_code == 404
+        assert resp.json()["error_type"] == "design_skill_not_found"

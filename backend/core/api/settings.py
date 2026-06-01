@@ -319,6 +319,23 @@ class SettingsAPI(BaseAPI):
                     # Keep the static placeholder option from FIELD_METADATA.
                     pass
 
+            if key == "design_skill_id":
+                try:
+                    from core import paths
+                    from services import design_skills
+                    skills = design_skills.list_skills(paths.design_assets_dir())
+                    entry["options"] = [
+                        {"value": "", "label": "— General (no specific skill) —"},
+                    ] + [
+                        {
+                            "value": s["id"],
+                            "label": f"{s['name']} · {s['mode']}",
+                        }
+                        for s in skills
+                    ]
+                except Exception:
+                    pass
+
             fields[key] = entry
 
         return {
