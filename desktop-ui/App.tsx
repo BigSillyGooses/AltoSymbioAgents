@@ -22,6 +22,9 @@ import { UpdateBanner } from "@/components/UpdateBanner";
 const AgentPanel = lazy(() =>
   import("@/components/AgentPanel").then((m) => ({ default: m.AgentPanel })),
 );
+const DesignPanel = lazy(() =>
+  import("@/components/DesignPanel").then((m) => ({ default: m.DesignPanel })),
+);
 const DiagnosticsPanel = lazy(() =>
   import("@/components/DiagnosticsPanel").then((m) => ({ default: m.DiagnosticsPanel })),
 );
@@ -527,6 +530,7 @@ export function App() {
             {view === "models" && <ModelBrowser />}
             {view === "prompts" && <PromptPanel />}
             {view === "saved_prompts" && <PromptLibraryPanel />}
+            {view === "design" && <DesignPanel />}
             {view === "mcp" && <McpPanel />}
             {view === "security" && <SecurityPanel />}
             {view === "usage" && <UsagePanel />}

@@ -84,3 +84,61 @@ class TestSkills:
         resp = client.get("/api/design/skills/no-such-skill", headers=_headers())
         assert resp.status_code == 404
         assert resp.json()["error_type"] == "design_skill_not_found"
+
+
+class TestArtifactLibrary:
+    HTML = "<!doctype html><html><body><h1>Saved</h1></body></html>"
+
+    def test_save_list_get_delete_roundtrip(self, in_memory_db, client):
+        # Save.
+        resp = client.post(
+            "/api/design/artifacts",
+            headers=_headers(),
+            json={
+                "title": "My Landing",
+                "identifier": "my-landing",
+                "content": self.HTML,
+                "design_system": "linear-app",
+                "skill": "web-prototype",
+            },
+        )
+        assert resp.status_code == 200
+        saved = resp.json()
+        artifact_id = saved["id"]
+        assert saved["title"] == "My Landing"
+        assert saved["content"] == self.HTML
+
+        # List (summaries — no content).
+        resp = client.get("/api/design/artifacts", headers=_headers())
+        assert resp.status_code == 200
+        items = resp.json()["artifacts"]
+        assert any(a["id"] == artifact_id for a in items)
+        assert "content" not in items[0]
+
+        # Get full.
+        resp = client.get(f"/api/design/artifacts/{artifact_id}", headers=_headers())
+        assert resp.status_code == 200
+        assert resp.json()["content"] == self.HTML
+
+        # Delete.
+        resp = client.delete(f"/api/design/artifacts/{artifact_id}", headers=_headers())
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        # Gone.
+        resp = client.get(f"/api/design/artifacts/{artifact_id}", headers=_headers())
+        assert resp.status_code == 404
+        assert resp.json()["error_type"] == "design_artifact_not_found"
+
+    def test_unknown_artifact_is_typed_404(self, in_memory_db, client):
+        resp = client.get("/api/design/artifacts/deadbeef", headers=_headers())
+        assert resp.status_code == 404
+        assert resp.json()["error_type"] == "design_artifact_not_found"
+
+    def test_save_rejects_empty_content(self, in_memory_db, client):
+        resp = client.post(
+            "/api/design/artifacts",
+            headers=_headers(),
+            json={"title": "x", "content": ""},
+        )
+        assert resp.status_code == 422  # pydantic min_length

@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+// Mock the Design client so the Save button runs without hitting the network.
+vi.mock("@/api/client", () => ({
+  Design: { saveArtifact: vi.fn().mockResolvedValue({ id: "a1" }) },
+}));
+
+import { Design } from "@/api/client";
 import { ArtifactView } from "./ArtifactView";
+import { DEVICE_WIDTHS } from "./DeviceFrame";
 
 const HTML = "<!doctype html><html><body><h1>Hi</h1></body></html>";
 
@@ -79,5 +86,53 @@ describe("ArtifactView", () => {
     expect(copyBtn?.disabled).toBe(true);
     // The preview iframe still renders the partial document.
     expect(container.querySelector("iframe")?.getAttribute("srcdoc")).toBe("<html>");
+  });
+
+  it("switches the preview viewport when a device is selected", async () => {
+    const { container } = render(
+      <ArtifactView title="Page" identifier="page" content={HTML} closed />,
+    );
+    // Default desktop: no width constraint on the frame.
+    let frame = container.querySelector('[data-testid="device-frame"]') as HTMLElement;
+    expect(frame.getAttribute("data-device")).toBe("desktop");
+
+    await userEvent.click(
+      container.querySelector('button[aria-label="Mobile viewport"]') as HTMLButtonElement,
+    );
+    frame = container.querySelector('[data-testid="device-frame"]') as HTMLElement;
+    expect(frame.getAttribute("data-device")).toBe("mobile");
+    expect(frame.style.width).toBe(`${DEVICE_WIDTHS.mobile}px`);
+  });
+
+  it("saves the artifact to the library", async () => {
+    const { container } = render(
+      <ArtifactView
+        title="Page"
+        identifier="page"
+        content={HTML}
+        closed
+        designSystem="linear-app"
+        skill="web-prototype"
+      />,
+    );
+    await userEvent.click(
+      container.querySelector('button[aria-label="Save to library"]') as HTMLButtonElement,
+    );
+    await waitFor(() => {
+      expect(Design.saveArtifact).toHaveBeenCalledWith({
+        title: "Page",
+        identifier: "page",
+        content: HTML,
+        design_system: "linear-app",
+        skill: "web-prototype",
+      });
+    });
+  });
+
+  it("hides the Save button in read-only mode (library preview)", () => {
+    const { container } = render(
+      <ArtifactView title="Page" identifier="page" content={HTML} closed allowSave={false} />,
+    );
+    expect(container.querySelector('button[aria-label="Save to library"]')).toBeNull();
   });
 });

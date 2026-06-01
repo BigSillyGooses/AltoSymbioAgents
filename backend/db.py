@@ -1064,6 +1064,24 @@ _MIGRATIONS = [
     ("team_allowed_tools.1.0", [
         "ALTER TABLE agent_teams ADD COLUMN allowed_tools TEXT",
     ]),
+
+    # ── Design Studio (Phase 3): saved artifact library ──────────────────────
+    # Persists generated HTML design artifacts the user chose to keep, so they
+    # survive past the originating conversation and can be re-opened / exported
+    # from the Design Library view. content is the full self-contained HTML;
+    # design_system / skill record the active selection at save time (nullable).
+    ("designstudio.artifacts.1.0", [
+        """CREATE TABLE IF NOT EXISTS design_artifacts (
+            id            TEXT PRIMARY KEY,
+            title         TEXT NOT NULL,
+            identifier    TEXT NOT NULL,
+            content       TEXT NOT NULL,
+            design_system TEXT,
+            skill         TEXT,
+            created_at    TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_design_artifacts_created ON design_artifacts(created_at)",
+    ]),
 ]
 
 

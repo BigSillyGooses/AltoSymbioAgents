@@ -10,6 +10,10 @@ vi.mock("@/api/client", () => ({
   Voice: {
     synthesize: vi.fn(),
   },
+  // ArtifactView (rendered for embedded <artifact> blocks) imports Design.
+  Design: {
+    saveArtifact: vi.fn().mockResolvedValue({ id: "a1" }),
+  },
 }));
 
 import { Voice } from "@/api/client";

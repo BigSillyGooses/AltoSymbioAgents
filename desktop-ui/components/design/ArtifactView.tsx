@@ -14,7 +14,18 @@
 
 import { useCallback, useState } from "react";
 
+import { Design, type SaveArtifactPayload } from "@/api/client";
+import { DeviceFrame, type DeviceKind } from "./DeviceFrame";
+
 const SANDBOX = "allow-scripts";
+
+const DEVICE_OPTIONS: { kind: DeviceKind; label: string }[] = [
+  { kind: "desktop", label: "Desktop" },
+  { kind: "tablet", label: "Tablet" },
+  { kind: "mobile", label: "Mobile" },
+];
+
+type SaveState = "idle" | "saving" | "saved" | "error";
 
 interface ArtifactViewProps {
   title: string;
@@ -23,10 +34,42 @@ interface ArtifactViewProps {
   // While the closing </artifact> hasn't streamed in yet the preview is shown
   // but export is disabled (the document is incomplete).
   closed: boolean;
+  // Optional active-selection metadata recorded alongside a saved artifact.
+  designSystem?: string | null;
+  skill?: string | null;
+  // The Design Library renders saved artifacts read-only — no re-save button.
+  allowSave?: boolean;
 }
 
-export function ArtifactView({ title, identifier, content, closed }: ArtifactViewProps) {
+export function ArtifactView({
+  title,
+  identifier,
+  content,
+  closed,
+  designSystem = null,
+  skill = null,
+  allowSave = true,
+}: ArtifactViewProps) {
   const [copied, setCopied] = useState(false);
+  const [device, setDevice] = useState<DeviceKind>("desktop");
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+
+  const onSave = useCallback(async () => {
+    setSaveState("saving");
+    try {
+      const payload: SaveArtifactPayload = {
+        title: title || identifier || "Untitled artifact",
+        identifier,
+        content,
+        design_system: designSystem,
+        skill,
+      };
+      await Design.saveArtifact(payload);
+      setSaveState("saved");
+    } catch {
+      setSaveState("error");
+    }
+  }, [title, identifier, content, designSystem, skill]);
 
   const onCopy = useCallback(async () => {
     try {
@@ -93,6 +136,46 @@ export function ArtifactView({ title, identifier, content, closed }: ArtifactVie
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {/* Viewport toggle — responsive preview. */}
+          <div
+            role="group"
+            aria-label="Preview viewport"
+            className="mr-1 flex items-center rounded border border-line bg-bg-1"
+          >
+            {DEVICE_OPTIONS.map((opt) => (
+              <button
+                key={opt.kind}
+                type="button"
+                onClick={() => setDevice(opt.kind)}
+                aria-pressed={device === opt.kind}
+                aria-label={`${opt.label} viewport`}
+                className={`px-2 py-0.5 text-[11px] ${
+                  device === opt.kind
+                    ? "text-accent"
+                    : "text-ink-dim hover:text-ink"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {allowSave && (
+            <button
+              type="button"
+              onClick={onSave}
+              disabled={!closed || saveState === "saving" || saveState === "saved"}
+              aria-label="Save to library"
+              className="rounded border border-line bg-bg-1 px-2 py-0.5 text-[11px] text-ink-dim hover:text-ink hover:bg-bg-3 disabled:opacity-40"
+            >
+              {saveState === "saved"
+                ? "Saved"
+                : saveState === "saving"
+                  ? "Saving…"
+                  : saveState === "error"
+                    ? "Retry save"
+                    : "Save"}
+            </button>
+          )}
           <button
             type="button"
             onClick={onCopy}
@@ -122,13 +205,15 @@ export function ArtifactView({ title, identifier, content, closed }: ArtifactVie
           </button>
         </div>
       </div>
-      <iframe
-        data-testid="artifact-frame"
-        title={title || `artifact-${identifier}`}
-        sandbox={SANDBOX}
-        srcDoc={content}
-        className="block h-[480px] w-full border-0 bg-white"
-      />
+      <DeviceFrame device={device}>
+        <iframe
+          data-testid="artifact-frame"
+          title={title || `artifact-${identifier}`}
+          sandbox={SANDBOX}
+          srcDoc={content}
+          className="block h-[480px] w-full border-0 bg-white"
+        />
+      </DeviceFrame>
     </div>
   );
 }
