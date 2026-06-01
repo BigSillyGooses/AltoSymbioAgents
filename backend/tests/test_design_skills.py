@@ -63,6 +63,23 @@ class TestListSkills:
     def test_missing_directory_returns_empty(self, tmp_path):
         assert design_skills.list_skills(tmp_path) == []
 
+    def test_media_skills_are_not_studio_compatible(self):
+        skills = {s["id"]: s for s in design_skills.list_skills(_root())}
+        # Real media skills declare an explicit od.mode → excluded.
+        for media_id in ("hatch-pet", "image-poster", "audio-jingle", "video-shortform"):
+            assert skills[media_id]["studio_compatible"] is False
+        # HTML skills are compatible.
+        assert skills["web-prototype"]["studio_compatible"] is True
+        assert skills["simple-deck"]["studio_compatible"] is True
+
+    def test_taste_variants_are_compatible_and_not_misclassified(self):
+        # These ship no `od` block; prose mentions "motion/animation" must NOT
+        # tag them as video, and they must stay studio-compatible.
+        skills = {s["id"]: s for s in design_skills.list_skills(_root())}
+        soft = skills["web-prototype-taste-soft"]
+        assert soft["mode"] in ("prototype", "deck")
+        assert soft["studio_compatible"] is True
+
 
 class TestReadSkill:
     def test_inlines_seed_and_references(self):

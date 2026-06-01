@@ -331,7 +331,10 @@ class SettingsAPI(BaseAPI):
                             "value": s["id"],
                             "label": f"{s['name']} · {s['mode']}",
                         }
+                        # Only HTML-artifact skills: media / design-system /
+                        # utility skills would fight the <artifact> directive.
                         for s in skills
+                        if s.get("studio_compatible", True)
                     ]
                 except Exception:
                     pass

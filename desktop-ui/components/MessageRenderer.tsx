@@ -161,6 +161,8 @@ function SpeakerButton({ text }: { text: string }) {
   // is announced as "[code]" rather than enumerating every character.
   const _sanitize = (raw: string): string => {
     let s = raw;
+    // Design Studio artifacts are full HTML documents — never read them aloud.
+    s = s.replace(/<artifact\b[^>]*>[\s\S]*?<\/artifact>/g, " (design artifact) ");
     s = s.replace(/```[\s\S]*?```/g, " (code) ");
     s = s.replace(/`[^`]*`/g, " (code) ");
     s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, " (image) ");

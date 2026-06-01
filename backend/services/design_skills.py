@@ -31,6 +31,13 @@ log = logging.getLogger("altosybioagents.design_skills")
 _KNOWN_SURFACES = {"web", "image", "video", "audio"}
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
+# Modes whose output is NOT a self-contained HTML <artifact>: media skills use
+# a media-generation contract Design Studio doesn't provide; design-system
+# emits a DESIGN.md; utility is a non-generative audit. Compatibility is judged
+# on the EXPLICIT od.mode only — a prototype skill with no `od` block must not
+# be excluded by prose-based mode inference.
+_NON_HTML_MODES = {"image", "video", "audio", "design-system", "utility"}
+
 # Front-matter: leading optional BOM, then a --- fenced YAML block, then body.
 # Mirrors frontmatter.ts.
 _FM_RE = re.compile(r"^﻿?---\r?\n(.*?)\r?\n---\r?\n?(.*)$", re.DOTALL)
@@ -100,6 +107,7 @@ def list_skills(root: Path) -> list[dict]:
                 "surface": _surface(od.get("surface"), mode),
                 "craft_requires": _craft_requires(od),
                 "design_system_required": _design_system_required(od),
+                "studio_compatible": _studio_compatible(od),
             }
         )
     return out
@@ -126,6 +134,7 @@ def read_skill(root: Path, skill_id: str) -> Optional[dict]:
         "name": str(data.get("name") or skill_id),
         "mode": mode,
         "craft_requires": _craft_requires(od),
+        "studio_compatible": _studio_compatible(od),
         "body": body.strip(),
         "assets": _inline_assets(skill_dir),
     }
@@ -167,17 +176,25 @@ def _design_system_required(od: dict) -> bool:
 
 
 def _infer_mode(body, description) -> str:
-    """Lightweight fallback when `od.mode` is absent (subset of skills.ts)."""
+    """Fallback when `od.mode` is absent — only deck vs prototype.
+
+    Every real media skill in the catalog declares an explicit `od.mode`, so
+    inference never needs to emit image/video/audio. It previously did (matching
+    "motion"/"animation"/"poster" in prose), which mislabelled prototype "taste"
+    variants (a soft, animated landing page) as video. Restricting inference to
+    deck-vs-prototype removes those false positives.
+    """
     hay = f"{description or ''}\n{body or ''}".lower()
-    if re.search(r"\bppt|deck|slide|presentation", hay):
+    if re.search(r"\b(ppt|deck|slides?|presentation|keynote)\b", hay):
         return "deck"
-    if re.search(r"\bimage|poster|illustration", hay):
-        return "image"
-    if re.search(r"\bvideo|motion|animation", hay):
-        return "video"
-    if re.search(r"\baudio|music|jingle|sound", hay):
-        return "audio"
     return "prototype"
+
+
+def _studio_compatible(od: dict) -> bool:
+    """True unless the skill's EXPLICIT od.mode declares a non-HTML output."""
+    raw = od.get("mode")
+    explicit = raw.strip().lower() if isinstance(raw, str) else ""
+    return explicit not in _NON_HTML_MODES
 
 
 def _reference_sort_key(path: Path):

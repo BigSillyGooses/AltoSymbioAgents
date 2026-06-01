@@ -166,7 +166,10 @@ def build_design_block(settings) -> str:
         skill_id = (settings.get("design_skill_id", "") or "").strip()
         if skill_id:
             skill = design_skills.read_skill(root, skill_id)
-            if skill:
+            # Skip non-HTML skills (media / design-system / utility) even if one
+            # was set directly via the API — they don't emit an <artifact> and
+            # would contradict the directive. The picker already filters these.
+            if skill and skill.get("studio_compatible", True):
                 skill_body = skill["body"]
                 skill_name = skill["name"]
                 skill_assets = skill["assets"]

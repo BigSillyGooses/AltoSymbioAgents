@@ -76,7 +76,7 @@ describe("ArtifactView", () => {
     expect(createObjectURL).toHaveBeenCalledTimes(1);
   });
 
-  it("disables export while the artifact is still streaming", () => {
+  it("shows a placeholder (no iframe) while the artifact is still streaming", () => {
     const { container } = render(
       <ArtifactView title="Page" identifier="page" content="<html>" closed={false} />,
     );
@@ -84,8 +84,21 @@ describe("ArtifactView", () => {
       'button[aria-label="Copy HTML"]',
     );
     expect(copyBtn?.disabled).toBe(true);
-    // The preview iframe still renders the partial document.
-    expect(container.querySelector("iframe")?.getAttribute("srcdoc")).toBe("<html>");
+    // The iframe is NOT mounted mid-stream — mounting it would reload per
+    // token. A placeholder stands in until the closing tag arrives.
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(container.querySelector('[data-testid="artifact-pending"]')).not.toBeNull();
+  });
+
+  it("mounts the iframe only once the artifact is closed", () => {
+    const { container, rerender } = render(
+      <ArtifactView title="Page" identifier="page" content="<html>" closed={false} />,
+    );
+    expect(container.querySelector("iframe")).toBeNull();
+    rerender(
+      <ArtifactView title="Page" identifier="page" content={HTML} closed />,
+    );
+    expect(container.querySelector("iframe")?.getAttribute("srcdoc")).toBe(HTML);
   });
 
   it("switches the preview viewport when a device is selected", async () => {

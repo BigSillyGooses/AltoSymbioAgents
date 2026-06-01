@@ -206,13 +206,26 @@ export function ArtifactView({
         </div>
       </div>
       <DeviceFrame device={device}>
-        <iframe
-          data-testid="artifact-frame"
-          title={title || `artifact-${identifier}`}
-          sandbox={SANDBOX}
-          srcDoc={content}
-          className="block h-[480px] w-full border-0 bg-white"
-        />
+        {closed ? (
+          <iframe
+            data-testid="artifact-frame"
+            title={title || `artifact-${identifier}`}
+            sandbox={SANDBOX}
+            srcDoc={content}
+            className="block h-[480px] w-full border-0 bg-white"
+          />
+        ) : (
+          // While the artifact streams, the buffer changes on every token —
+          // mounting the iframe here would reload it per token (flicker + CPU)
+          // and render half-written HTML. Show a placeholder until the closing
+          // </artifact> arrives, then mount the iframe once with final content.
+          <div
+            data-testid="artifact-pending"
+            className="flex h-[480px] w-full items-center justify-center bg-bg-2 text-sm text-ink-dim"
+          >
+            Generating preview…
+          </div>
+        )}
       </DeviceFrame>
     </div>
   );

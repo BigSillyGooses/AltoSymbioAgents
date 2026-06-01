@@ -146,3 +146,12 @@ class TestSkillInjection:
         )
         assert "Design Studio mode" in block
         assert "Active skill" not in block
+
+    def test_incompatible_media_skill_is_not_injected(self):
+        # Even if a media skill id is set directly, it must not be injected —
+        # it doesn't emit an <artifact> and would contradict the directive.
+        block = design_studio.build_design_block(
+            _FakeSettings({"design_studio_enabled": True, "design_skill_id": "hatch-pet"})
+        )
+        assert "Design Studio mode" in block
+        assert "Active skill" not in block
