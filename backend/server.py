@@ -194,6 +194,8 @@ ROUTER_SPECS: tuple[tuple[str, str], ...] = (
     ("routes.system", "/api/system"),
     ("routes.usage", "/api/usage"),
     ("routes.voice", "/api/voice"),
+    ("routes.workers", "/api/workers"),
+    ("routes.workflows", "/api/workflows"),
 )
 
 
@@ -226,7 +228,25 @@ def build_app(token: str, user_data: Path | None) -> tuple[FastAPI, _AppContaine
                 log.info("workflow_checkpoints: marked %d orphaned provisional rows as abandoned", n)
         except Exception as exc:
             log.warning("workflow_checkpoints abandon-sweep skipped: %s", exc)
+
+        # Background worker daemon (Feature 4). No-op while
+        # background_workers_enabled is off; cancelled cleanly on shutdown.
+        worker_task = None
+        try:
+            from services.workers.daemon import WorkerDaemon
+            daemon = WorkerDaemon(container.settings)
+            worker_task = asyncio.create_task(daemon.run())
+        except Exception as exc:
+            log.warning("WorkerDaemon spawn skipped: %s", exc)
+
         yield
+
+        if worker_task is not None:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     app = FastAPI(
         title=OPENAPI_TITLE, version=OPENAPI_VERSION, lifespan=_lifespan,

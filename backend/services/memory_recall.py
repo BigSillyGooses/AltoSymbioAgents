@@ -42,9 +42,10 @@ class MemoryRecallResult:
     ``MemoryContext`` in place and rebuilds ``full_system``. Callers that
     need an immutable view can take a copy themselves.
     """
-    mem:         MemoryContext
-    mem_suffix:  str
-    full_system: str
+    mem:            MemoryContext
+    mem_suffix:     str
+    full_system:    str
+    guidance_block: str = ""
 
 
 class MemoryRecall:
@@ -73,7 +74,10 @@ class MemoryRecall:
         prompt — same behavior the inline orchestrator code had.
         """
         mem = self.memory.get_context(conversation_id, user_message)
-        return self._assemble(mem, system_prompt, allowed_tools, agent)
+        guidance_block = self._guidance_block(user_message, agent)
+        return self._assemble(
+            mem, system_prompt, allowed_tools, agent, guidance_block,
+        )
 
     def trim_for_complexity(
         self,
@@ -99,7 +103,10 @@ class MemoryRecall:
             len(result.mem.rag_chunks), max_items, complexity,
         )
         result.mem.rag_chunks = result.mem.rag_chunks[:max_items]
-        return self._assemble(result.mem, system_prompt, allowed_tools, agent)
+        return self._assemble(
+            result.mem, system_prompt, allowed_tools, agent,
+            result.guidance_block,
+        )
 
     def maybe_summarize(self, conversation_id: str) -> None:
         """Trigger the memory buffer summariser if the manager says so."""
@@ -126,12 +133,15 @@ class MemoryRecall:
         system_prompt: str,
         allowed_tools: Optional[list],
         agent: Optional[dict],
+        guidance_block: str = "",
     ) -> MemoryRecallResult:
-        """Build (mem_suffix, full_system) from the three contributing parts.
+        """Build (mem_suffix, full_system) from the contributing parts.
 
         Pre-Layer-3 the orchestrator had two near-identical copies of this
         logic — once at initial recall, once after the RAG trim. Centralising
-        here makes RAG-trim correctness a one-line concern.
+        here makes RAG-trim correctness a one-line concern. ``guidance_block``
+        (Feature 2) is computed once in ``recall`` and threaded through so it
+        survives the RAG-trim rebuild.
         """
         mem_suffix = mem.to_system_suffix()
         full_system = system_prompt
@@ -143,9 +153,36 @@ class MemoryRecall:
             mcp_block = self._mcp_tool_block(agent)
             if mcp_block:
                 full_system += mcp_block
+        if guidance_block:
+            full_system += guidance_block
         return MemoryRecallResult(
             mem=mem, mem_suffix=mem_suffix, full_system=full_system,
+            guidance_block=guidance_block,
         )
+
+    def _guidance_block(self, user_message: str, agent: Optional[dict]) -> str:
+        """Feature 2: retrieve only the rules relevant to this message.
+
+        Flag-gated and best-effort: any failure yields an empty block so the
+        turn proceeds with the base prompt unchanged.
+        """
+        if not self._settings.get("guidance_compiler_enabled", False):
+            return ""
+        try:
+            from services import guidance
+            scope = "global"
+            if agent and agent.get("id"):
+                scope = f"agent:{agent['id']}"
+            rules = guidance.retrieve(
+                user_message,
+                scope=scope,
+                top_k=int(self._settings.get("guidance_top_k", 5) or 5),
+                min_sim=float(self._settings.get("guidance_min_similarity", 0.45) or 0.45),
+            )
+            return guidance.format_block(rules)
+        except Exception as exc:
+            log.debug("guidance block skipped: %s", exc)
+            return ""
 
     @staticmethod
     def _tool_restriction_block(allowed_tools: list) -> str:

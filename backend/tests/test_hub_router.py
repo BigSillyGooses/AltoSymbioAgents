@@ -495,3 +495,42 @@ def test_no_direct_worker_calls_outside_hub_router():
         "All worker calls must go through HubRouter.invoke():\n  "
         + "\n  ".join(offenders)
     )
+
+
+# ── ReasoningBank-lite: trajectory bias is applied once per route() ───────────
+
+
+def test_route_recalls_trajectory_once_for_all_candidates(
+    in_memory_db, hub, monkeypatch
+):
+    """route() must recall trajectory history a SINGLE time for the whole
+    candidate set (not once per agent) and let the bias tip the decision."""
+    from services import trajectory_store
+
+    a = _seed_agent(in_memory_db, "A", "researcher",
+                    [{"name": "researcher", "scopes": ["read"]}])
+    b = _seed_agent(in_memory_db, "B", "researcher",
+                    [{"name": "researcher", "scopes": ["read"]}])
+
+    orig_get = hub._settings.get
+    monkeypatch.setattr(
+        hub._settings, "get",
+        lambda k, d=None: True if k == "trajectory_guidance_enabled" else orig_get(k, d),
+    )
+
+    calls = {"n": 0}
+
+    def _fake_table(task_text, **kw):
+        calls["n"] += 1
+        return {b: 1.0, a: 0.0}  # B historically succeeds, A fails
+
+    monkeypatch.setattr(trajectory_store, "bias_table", _fake_table)
+
+    task = TaskDescriptor(text="research the topic",
+                          required_skills=("researcher",),
+                          required_scopes=("read",))
+    decision = hub.route(task)
+
+    assert calls["n"] == 1               # one recall for both candidates
+    assert decision.agent_id == b        # bias broke the tie toward B
+    assert "trajectory bias" in decision.reasoning

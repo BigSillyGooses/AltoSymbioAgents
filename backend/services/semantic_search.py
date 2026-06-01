@@ -525,7 +525,22 @@ def _index_dirty_memories(batch_size: int = 50) -> int:
 def run_indexer_cycle() -> int:
     d = _index_dirty_documents()
     m = _index_dirty_memories()
-    return d + m
+    t = 0
+    g = 0
+    # Catch-up embedding for ReasoningBank-lite trajectories and Guidance
+    # rule shards. Imported lazily to avoid a circular import at module load
+    # (both modules import semantic_search).
+    try:
+        from services import trajectory_store
+        t = trajectory_store.index_pending()
+    except Exception:
+        pass
+    try:
+        from services import guidance
+        g = guidance.index_pending()
+    except Exception:
+        pass
+    return d + m + t + g
 
 
 def start_background_indexer(interval_seconds: int = 60) -> threading.Thread:

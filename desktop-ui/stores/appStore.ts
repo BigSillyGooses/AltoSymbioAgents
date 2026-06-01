@@ -25,7 +25,9 @@ export type ActiveView =
   | "usage"
   | "settings"
   | "diagnostics"
-  | "escalations";
+  | "escalations"
+  | "workers"
+  | "workflows";
 
 export type ToastAction = "open_canary_alert";
 
@@ -174,8 +176,13 @@ export interface AppState {
   // backend on mount; mutations write through and refresh.
   promptTemplates: PromptTemplate[];
 
+  // Monotonic counter bumped on every background worker/workflow SSE event.
+  // The Workers and Workflows panels watch it to refresh live (Features 4/5).
+  bgTick: number;
+
   // Actions
   setActiveView: (v: ActiveView) => void;
+  bumpBg: () => void;
   setStudioMode: (on: boolean) => void;
   setHasCompletedFirstRun: (done: boolean) => void;
   setBootstrapped: (b: boolean) => void;
@@ -237,6 +244,7 @@ export const useAppStore = create<AppState>()(
       studioMode: false,
       hasCompletedFirstRun: false,
       bootstrapped: false,
+      bgTick: 0,
 
       sidecarStatus: null,
       toasts: [],
@@ -275,6 +283,7 @@ export const useAppStore = create<AppState>()(
       promptTemplates: [],
 
       setActiveView: (v) => set({ activeView: v }),
+      bumpBg: () => set((s) => ({ bgTick: s.bgTick + 1 })),
       setStudioMode: (on) => set({ studioMode: on }),
       setHasCompletedFirstRun: (done) => set({ hasCompletedFirstRun: done }),
       setBootstrapped: (b) => set({ bootstrapped: b }),

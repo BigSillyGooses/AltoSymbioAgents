@@ -310,6 +310,40 @@ class HubRouter:
             return agent_budget
         return min(agent_budget, cap)
 
+    def _trajectory_rates(self, task_text: str) -> dict[str, float]:
+        """Per-agent historical success rates for this task, via ONE recall.
+
+        Returns ``{agent_id: success_rate}`` (empty when the feature is off or
+        there is no relevant history). Embeds/queries the task exactly once per
+        routing call rather than once per candidate agent.
+        """
+        if not self._settings.get("trajectory_guidance_enabled", False):
+            return {}
+        try:
+            from services import trajectory_store
+            top_k = int(self._settings.get("trajectory_retrieval_top_k", 3) or 3)
+            min_sim = float(self._settings.get("trajectory_min_similarity", 0.6) or 0.6)
+            return trajectory_store.bias_table(task_text, top_k=top_k, min_sim=min_sim)
+        except Exception:
+            return {}
+
+    def _apply_trajectory_bias(
+        self, score: float, success_rate: Optional[float]
+    ) -> tuple[float, Optional[float]]:
+        """Nudge a skill-match score by a precomputed past-success rate.
+
+        Returns ``(adjusted_score, bias_delta)`` where ``bias_delta`` is the
+        signed nudge applied (or None when there is no relevant history). The
+        adjustment is intentionally modest so routing stays explainable:
+        ``delta = weight * (success_rate - 0.5)``, clamped to [0, 1].
+        """
+        if success_rate is None:
+            return score, None
+        weight = float(self._settings.get("trajectory_bias_weight", 0.3) or 0.3)
+        delta = round(weight * (success_rate - 0.5), 3)
+        adjusted = max(0.0, min(1.0, score + delta))
+        return adjusted, delta
+
     def route(self, task: TaskDescriptor) -> RoutingDecision:
         """No-agent-specified path. Picks by skill match across all agents."""
         if task.preferred_agent_id:
@@ -320,25 +354,37 @@ class HubRouter:
             "WHERE skills IS NOT NULL AND skills != '[]'"
         )
 
+        # ReasoningBank-lite: recall per-agent historical success ONCE for the
+        # whole candidate set (one embed/query per turn), then bias each score.
+        bias_rates = self._trajectory_rates(task.text)
+
         best_row = None
         best_backend: str = "claude"
         best_score: float = 0.0
         best_skill: str = ""
+        best_bias: Optional[float] = None
         for r in rows:
             declared = self._parse_skills(r["skills"])
             score, matched = self._score_match(declared, task)
-            if score > best_score:
-                best_score = score
+            adj_score, bias = self._apply_trajectory_bias(
+                score, bias_rates.get(r["id"])
+            )
+            if adj_score > best_score:
+                best_score = adj_score
                 best_row = r
                 best_backend = self._resolve_backend(r["model_preference"], task.backend_hint)
                 best_skill = matched
+                best_bias = bias
 
         if best_row is not None and best_score >= MIN_SKILL_MATCH_SCORE:
+            reasoning = f"skill-match on '{best_skill}' (score {best_score:.2f})"
+            if best_bias is not None:
+                reasoning += f"; trajectory bias {best_bias:+.2f}"
             return RoutingDecision(
                 agent_id=best_row["id"],
                 backend=best_backend,
                 score=best_score,
-                reasoning=f"skill-match on '{best_skill}' (score {best_score:.2f})",
+                reasoning=reasoning,
                 used_fallback=False,
                 skill_matched=best_skill,
                 thinking_budget=self._capped_budget(best_row),

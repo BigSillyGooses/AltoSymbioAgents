@@ -243,6 +243,40 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     # weekly bench cycles (AgentDojo + agentic-misalignment) confirm parity.
     "orchestrator_engine":           (str,   "legacy"),
 
+    # ── Ported from ruflo (feature-audit) ─────────────────────────────────
+    # Feature 1 — ReasoningBank-lite. When enabled, each completed turn's
+    # routing decision + outcome verdict is recorded as an embedded
+    # "trajectory" and the router biases future skill-match scores toward
+    # agents that historically succeeded on semantically-similar tasks.
+    "trajectory_guidance_enabled":   (bool,  False),
+    "trajectory_retrieval_top_k":    (int,   3),
+    "trajectory_min_similarity":     (float, 0.6),
+    "trajectory_bias_weight":        (float, 0.3),
+
+    # Feature 2 — Guidance / Constitution compiler. When enabled, project/role
+    # rules are stored as embedded shards and only the rules relevant to the
+    # current message are injected into the system prompt.
+    "guidance_compiler_enabled":     (bool,  False),
+    "guidance_top_k":                (int,   5),
+    "guidance_min_similarity":       (float, 0.45),
+
+    # Feature 3 — AIDefence injection signatures. Additive deterministic
+    # prompt-injection signature pack + jailbreak heuristic layered on top of
+    # the existing scanner. Safe-on by default (security-positive, no model
+    # calls). Block threshold mirrors the scanner's BLOCK_THRESHOLD.
+    "aidefence_signatures_enabled":  (bool,  True),
+    "aidefence_block_threshold":     (float, 0.80),
+
+    # Feature 4 — Background workers daemon. Off by default; the sidecar
+    # daemon only polls when enabled.
+    "background_workers_enabled":    (bool,  False),
+    "worker_poll_seconds":           (int,   30),
+
+    # Feature 5 — Explicit workflow engine (defined DAGs on top of the
+    # existing team pipeline + workflow_checkpoints saga).
+    "workflow_engine_enabled":       (bool,  False),
+    "workflow_max_tokens":           (int,   2048),
+
     # QLPT Stage 1: logprob-derived margin-proxy quality scorer.
     # When True, EscalationLadder uses services.margin_proxy in place of
     # the self-score LLM call — but only when the worker actually
@@ -914,6 +948,93 @@ FIELD_METADATA: dict[str, dict] = {
     "camel_enabled": {
         "label":       "CaMeL isolation",
         "description": "Quarantine retrieved content from the privileged LLM (experimental).",
+        "type":        "bool",
+        "group":       "advanced",
+    },
+    "trajectory_guidance_enabled": {
+        "label":       "Trajectory-guided routing",
+        "description": "Learn from past turns: bias routing toward agents that historically succeeded on similar tasks (ReasoningBank-lite).",
+        "type":        "bool",
+        "group":       "advanced",
+    },
+    "trajectory_retrieval_top_k": {
+        "label":       "Trajectory recall depth",
+        "description": "How many similar past trajectories to consider when biasing routing.",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         1,
+        "max":         20,
+    },
+    "trajectory_min_similarity": {
+        "label":       "Trajectory similarity threshold",
+        "description": "Minimum vector similarity (0-1) for a past trajectory to influence routing.",
+        "type":        "float",
+        "group":       "advanced",
+        "min":         0.0,
+        "max":         1.0,
+    },
+    "trajectory_bias_weight": {
+        "label":       "Trajectory bias strength",
+        "description": "How strongly past success/failure nudges the skill-match score.",
+        "type":        "float",
+        "group":       "advanced",
+        "min":         0.0,
+        "max":         1.0,
+    },
+    "guidance_compiler_enabled": {
+        "label":       "Guidance compiler",
+        "description": "Inject only the project/role rules relevant to the current message instead of the whole rulebook.",
+        "type":        "bool",
+        "group":       "advanced",
+    },
+    "guidance_top_k": {
+        "label":       "Guidance rules per turn",
+        "description": "Maximum number of relevant rule shards to inject into the system prompt.",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         1,
+        "max":         20,
+    },
+    "guidance_min_similarity": {
+        "label":       "Guidance similarity threshold",
+        "description": "Minimum vector similarity (0-1) for a rule shard to be considered relevant.",
+        "type":        "float",
+        "group":       "advanced",
+        "min":         0.0,
+        "max":         1.0,
+    },
+    "aidefence_signatures_enabled": {
+        "label":       "AIDefence signatures",
+        "description": "Layer a deterministic prompt-injection signature pack and jailbreak heuristic on top of the security scanner.",
+        "type":        "bool",
+        "group":       "advanced",
+    },
+    "aidefence_block_threshold": {
+        "label":       "AIDefence block threshold",
+        "description": "Combined risk score (0-1) at or above which a message is blocked.",
+        "type":        "float",
+        "group":       "advanced",
+        "min":         0.0,
+        "max":         1.0,
+    },
+    "background_workers_enabled": {
+        "label":       "Background workers",
+        "description": "Run background analysis workers (audit, document, test-gaps, map) against the workspace.",
+        "type":        "bool",
+        "group":       "advanced",
+    },
+    "worker_poll_seconds": {
+        "label":       "Worker poll interval",
+        "description": "How often the background worker daemon checks for queued tasks.",
+        "type":        "int",
+        "group":       "advanced",
+        "unit":        "seconds",
+        "min":         5,
+        "max":         3600,
+    },
+    "workflow_engine_enabled": {
+        "label":       "Workflow engine",
+        "description": "Enable user-defined multi-step workflows (DAGs) on top of the team pipeline.",
         "type":        "bool",
         "group":       "advanced",
     },

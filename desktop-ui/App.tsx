@@ -55,6 +55,12 @@ const SecurityPanel = lazy(() =>
 const UsagePanel = lazy(() =>
   import("@/components/UsagePanel").then((m) => ({ default: m.UsagePanel })),
 );
+const WorkersPanel = lazy(() =>
+  import("@/components/WorkersPanel").then((m) => ({ default: m.WorkersPanel })),
+);
+const WorkflowPanel = lazy(() =>
+  import("@/components/WorkflowPanel").then((m) => ({ default: m.WorkflowPanel })),
+);
 import {
   useAppStore,
   type CanaryAlert,
@@ -73,6 +79,7 @@ export function App() {
   const setServiceStatus = useAppStore((s) => s.setServiceStatus);
   const pushToast = useAppStore((s) => s.pushToast);
   const dismissToast = useAppStore((s) => s.dismissToast);
+  const bumpBg = useAppStore((s) => s.bumpBg);
   const toasts = useAppStore((s) => s.toasts);
   const hasCompletedFirstRun = useAppStore((s) => s.hasCompletedFirstRun);
   const setHasCompletedFirstRun = useAppStore((s) => s.setHasCompletedFirstRun);
@@ -369,6 +376,32 @@ export function App() {
             };
             addPendingMemoryWrite(item);
           },
+          // ── Feature 4: background worker progress ────────────────────
+          worker_progress: (data) => {
+            const evt = data as { status?: string; worker?: string; message?: string };
+            bumpBg();
+            if (evt.status === "error") {
+              pushToast({
+                kind: "error",
+                text: `Worker ${evt.worker ?? ""} failed: ${evt.message ?? ""}`,
+              });
+            }
+          },
+          // ── Feature 5: workflow execution progress ───────────────────
+          workflow_started: () => {
+            bumpBg();
+          },
+          workflow_step: () => {
+            bumpBg();
+          },
+          workflow_finished: (data) => {
+            const evt = data as { status?: string };
+            bumpBg();
+            pushToast({
+              kind: evt.status === "completed" ? "success" : "warn",
+              text: `Workflow ${evt.status ?? "finished"}`,
+            });
+          },
         },
         onError: (_err, { closed }) => {
           // EventSource handles transient blips on its own. Only act when
@@ -418,6 +451,7 @@ export function App() {
     setVotingActive,
     patchBundledDownload,
     patchVoiceAssets,
+    bumpBg,
   ]);
 
   // ── Pending escalations: hydrate on backend-ready ──────────────────────
@@ -498,6 +532,8 @@ export function App() {
             {view === "usage" && <UsagePanel />}
             {view === "diagnostics" && <DiagnosticsPanel />}
             {view === "escalations" && <EscalationPanel />}
+            {view === "workers" && <WorkersPanel />}
+            {view === "workflows" && <WorkflowPanel />}
           </Suspense>
         </main>
       </div>

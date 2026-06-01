@@ -1,0 +1,43 @@
+{
+  "id": "sparc",
+  "name": "SPARC",
+  "description": "Specification, Pseudocode, Architecture, Refinement, Completion — a structured design methodology with a specification quality gate.",
+  "tasks": [
+    {
+      "name": "specification",
+      "agent_role": "analyst",
+      "prompt": "Write a clear, complete specification for the following task. Enumerate functional requirements, non-functional requirements, inputs, outputs, and edge cases.\n\nTASK:\n{{input}}"
+    },
+    {
+      "name": "spec_review",
+      "agent_role": "reviewer",
+      "depends_on": ["specification"],
+      "prompt": "Critically review the specification from the previous step for completeness and ambiguity. End your response with a single line that is exactly 'GATE: PASS' if the specification is good enough to proceed, or 'GATE: FAIL' otherwise, followed by the reasons."
+    },
+    {
+      "name": "pseudocode",
+      "agent_role": "coder",
+      "depends_on": ["spec_review"],
+      "condition": {"when": {"task": "spec_review", "contains": "GATE: PASS"}},
+      "prompt": "Using the approved specification, write clear language-agnostic pseudocode that covers every requirement and edge case."
+    },
+    {
+      "name": "architecture",
+      "agent_role": "coder",
+      "depends_on": ["pseudocode"],
+      "prompt": "Design the software architecture that implements the pseudocode: modules, data structures, interfaces, and how they interact. Justify the key decisions."
+    },
+    {
+      "name": "refinement",
+      "agent_role": "reviewer",
+      "depends_on": ["architecture"],
+      "prompt": "Refine the architecture: identify weaknesses, simplify where possible, and address performance, testability, and failure modes."
+    },
+    {
+      "name": "completion",
+      "agent_role": "writer",
+      "depends_on": ["refinement"],
+      "prompt": "Produce the final deliverable: a concise implementation plan with an ordered task list and acceptance criteria, synthesising all previous steps."
+    }
+  ]
+}

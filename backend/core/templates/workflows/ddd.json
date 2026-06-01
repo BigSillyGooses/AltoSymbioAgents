@@ -1,0 +1,30 @@
+{
+  "id": "ddd",
+  "name": "Domain-Driven Design",
+  "description": "Strategic and tactical DDD: ubiquitous language, bounded contexts, aggregates, and a domain model.",
+  "tasks": [
+    {
+      "name": "domain_analysis",
+      "agent_role": "analyst",
+      "prompt": "Analyse the problem domain below. Identify the core domain, subdomains, and the key concepts and rules that define the ubiquitous language.\n\nDOMAIN:\n{{input}}"
+    },
+    {
+      "name": "bounded_contexts",
+      "agent_role": "analyst",
+      "depends_on": ["domain_analysis"],
+      "prompt": "Define the bounded contexts for this domain, the responsibilities of each, and the relationships (context map) between them."
+    },
+    {
+      "name": "aggregates",
+      "agent_role": "coder",
+      "depends_on": ["bounded_contexts"],
+      "prompt": "For each bounded context, identify the aggregates, aggregate roots, entities, and value objects, and the invariants each aggregate must protect."
+    },
+    {
+      "name": "domain_model",
+      "agent_role": "writer",
+      "depends_on": ["aggregates"],
+      "prompt": "Produce the final domain model: a structured description of contexts, aggregates, domain events, and repositories, ready to hand to engineering."
+    }
+  ]
+}

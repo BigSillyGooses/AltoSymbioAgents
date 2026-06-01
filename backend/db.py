@@ -163,6 +163,89 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             )
         """)
 
+        # ── ReasoningBank-lite: per-turn trajectory store ─────────────────────
+        # One row per completed turn capturing the routing decision and the
+        # outcome verdict. Embedded into vec_trajectories for similarity recall
+        # so the router can bias toward agents/skills that historically
+        # succeeded on semantically-similar tasks.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS trajectories (
+                id               TEXT PRIMARY KEY,
+                conversation_id  TEXT,
+                turn_id          TEXT,
+                task_text        TEXT NOT NULL,
+                agent_id         TEXT,
+                skill_matched    TEXT,
+                backend          TEXT,
+                model_name       TEXT,
+                routing_score    REAL,
+                route_reasoning  TEXT,
+                quality_verdict  TEXT,
+                had_error        INTEGER DEFAULT 0,
+                response_empty   INTEGER DEFAULT 0,
+                tokens_in        INTEGER DEFAULT 0,
+                tokens_out       INTEGER DEFAULT 0,
+                embedding_status TEXT DEFAULT 'dirty',
+                created_at       TEXT NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traj_agent_skill "
+            "ON trajectories(agent_id, skill_matched, created_at)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traj_status "
+            "ON trajectories(embedding_status)"
+        )
+
+        # ── Guidance / Constitution compiler: rule shards ─────────────────────
+        # Project/role rules split into discrete shards, embedded so only the
+        # rules relevant to the current message are injected into the system
+        # prompt (instead of the whole rulebook every turn).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS guidance_rules (
+                id               TEXT PRIMARY KEY,
+                scope            TEXT DEFAULT 'global',
+                rule_text        TEXT NOT NULL,
+                priority         INTEGER DEFAULT 0,
+                source           TEXT DEFAULT '',
+                enabled          INTEGER DEFAULT 1,
+                embedding_status TEXT DEFAULT 'dirty',
+                created_at       TEXT NOT NULL,
+                updated_at       TEXT
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_guidance_scope "
+            "ON guidance_rules(scope, enabled)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_guidance_status "
+            "ON guidance_rules(embedding_status)"
+        )
+
+        # ── Background workers: queued analysis tasks ─────────────────────────
+        # The worker daemon polls this table for 'pending' rows, runs the named
+        # worker against Alto's own data stores, and streams progress via SSE.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS worker_tasks (
+                id           TEXT PRIMARY KEY,
+                worker       TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'pending',
+                params       TEXT DEFAULT '{}',
+                result       TEXT,
+                error        TEXT,
+                progress     REAL DEFAULT 0.0,
+                created_at   TEXT NOT NULL,
+                started_at   TEXT,
+                finished_at  TEXT
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_worker_tasks_status "
+            "ON worker_tasks(status, created_at)"
+        )
+
         # ── Conversations (server-side chat history) ──────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
@@ -557,6 +640,18 @@ def _create_schema(conn: sqlite3.Connection) -> None:
                 memory_id TEXT UNIQUE NOT NULL
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vec_trajectories_map (
+                vec_rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                trajectory_id TEXT UNIQUE NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vec_guidance_map (
+                vec_rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_id TEXT UNIQUE NOT NULL
+            )
+        """)
         try:
             cur.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS vec_documents USING vec0(
@@ -565,6 +660,16 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             """)
             cur.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
+                    embedding float[384]
+                )
+            """)
+            cur.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS vec_trajectories USING vec0(
+                    embedding float[384]
+                )
+            """)
+            cur.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS vec_guidance USING vec0(
                     embedding float[384]
                 )
             """)

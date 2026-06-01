@@ -23,9 +23,11 @@ const NAV_SECTIONS: NavSection[] = [
     id: "workspace",
     label: "Workspace",
     items: [
-      { id: "chat",   label: "Chat",   hint: "Talk to your team" },
-      { id: "agents", label: "Agents", hint: "Define agents and teams" },
-      { id: "models", label: "Models", hint: "Browse and switch local models" },
+      { id: "chat",      label: "Chat",      hint: "Talk to your team" },
+      { id: "agents",    label: "Agents",    hint: "Define agents and teams" },
+      { id: "models",    label: "Models",    hint: "Browse and switch local models" },
+      { id: "workflows", label: "Workflows", hint: "Build and run multi-step workflows", studioOnly: true },
+      { id: "workers",   label: "Workers",   hint: "Background analysis jobs", studioOnly: true },
     ],
   },
   {

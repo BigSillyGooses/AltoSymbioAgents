@@ -675,6 +675,111 @@ export const Mcp = {
   refresh: () => api.post<unknown>("/api/mcp/refresh"),
 };
 
+// ── Background workers (Feature 4) ───────────────────────────────────────────
+
+export interface WorkerInfo {
+  name: string;
+  description: string;
+}
+
+export interface WorkerTask {
+  id: string;
+  worker: string;
+  status: "pending" | "running" | "done" | "error";
+  params: Record<string, unknown>;
+  result: unknown;
+  error: string | null;
+  progress: number;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export const Workers = {
+  list: () => api.get<{ workers: WorkerInfo[] }>("/api/workers/list"),
+  tasks: (limit = 50) =>
+    api.get<{ tasks: WorkerTask[] }>("/api/workers/tasks", { limit }),
+  getTask: (id: string) =>
+    api.get<WorkerTask>(`/api/workers/tasks/${encodeURIComponent(id)}`),
+  run: (worker: string, params: Record<string, unknown> = {}) =>
+    api.post<{ ok: boolean; task_id?: string; error?: string }>(
+      "/api/workers/run",
+      { worker, params },
+    ),
+};
+
+// ── Workflows (Features 5 + 6) ───────────────────────────────────────────────
+
+// Module-local: surfaced structurally via WorkflowDetail.tasks (not imported by name).
+interface WorkflowTaskView {
+  id: string;
+  name: string;
+  agent_role: string;
+  status: "pending" | "running" | "completed" | "failed" | "skipped";
+  depends_on: string[];
+  condition: unknown;
+  prompt: string;
+  output: string;
+  error: string | null;
+}
+
+export interface WorkflowSummary {
+  id: string;
+  name: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowDetail extends WorkflowSummary {
+  tasks: WorkflowTaskView[];
+  checkpoints: Record<string, unknown>[];
+}
+
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description: string;
+  steps: string[];
+}
+
+// Module-local: consumed structurally via Workflows.create (not imported by name).
+interface WorkflowTaskInput {
+  name: string;
+  agent_role?: string;
+  prompt?: string;
+  depends_on?: string[];
+  condition?: unknown;
+  max_attempts?: number;
+}
+
+export const Workflows = {
+  list: (limit = 50) =>
+    api.get<{ workflows: WorkflowSummary[] }>("/api/workflows/list", { limit }),
+  get: (id: string) =>
+    api.get<WorkflowDetail>(`/api/workflows/${encodeURIComponent(id)}`),
+  templates: () =>
+    api.get<{ templates: WorkflowTemplate[] }>("/api/workflows/templates"),
+  create: (name: string, tasks: WorkflowTaskInput[]) =>
+    api.post<{ ok: boolean; workflow_id?: string; error?: string }>(
+      "/api/workflows/create",
+      { name, tasks },
+    ),
+  fromTemplate: (template_id: string, input: string, run = false) =>
+    api.post<{ ok: boolean; workflow_id?: string; error?: string }>(
+      "/api/workflows/from_template",
+      { template_id, input, run },
+    ),
+  run: (id: string) =>
+    api.post<{ ok: boolean; workflow_id?: string; status?: string; error?: string }>(
+      `/api/workflows/${encodeURIComponent(id)}/run`,
+    ),
+  resume: (id: string) =>
+    api.post<{ ok: boolean; workflow_id?: string; status?: string; error?: string }>(
+      `/api/workflows/${encodeURIComponent(id)}/resume`,
+    ),
+};
+
 export const Prompts = {
   list: () => api.get<unknown[]>("/api/prompts"),
   versions: (id: string) => api.get<unknown[]>(`/api/prompts/${encodeURIComponent(id)}/versions`),

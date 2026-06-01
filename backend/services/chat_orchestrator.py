@@ -1938,6 +1938,31 @@ class ChatOrchestrator:
         budget_warning = close_result.budget_warning
         self._turn_lifecycle.maybe_auto_title(ctx, response_text)
 
+        # ReasoningBank-lite: record this turn's routing decision + outcome so
+        # the router can learn from it. Best-effort and flag-gated; never
+        # allowed to affect the turn result.
+        if self._settings.get("trajectory_guidance_enabled", False):
+            try:
+                from services import trajectory_store
+                trajectory_store.record(
+                    conversation_id=conversation_id,
+                    turn_id=ctx.turn_id,
+                    task_text=user_message,
+                    agent_id=getattr(decision, "agent_id", None),
+                    skill_matched=getattr(decision, "skill_matched", None),
+                    backend=getattr(decision, "backend", route_model),
+                    model_name=model_name,
+                    routing_score=getattr(decision, "score", None),
+                    route_reasoning=route_reason,
+                    quality_verdict=(mast_category if turn_failed else "success"),
+                    had_error=turn_failed,
+                    response_empty=response_empty,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                )
+            except Exception as exc:
+                log.debug("trajectory record skipped: %s", exc)
+
         # Update memory
         self.memory.add_to_buffer(conversation_id, "user", user_message)
         self.memory.add_to_buffer(conversation_id, "assistant", response_text)

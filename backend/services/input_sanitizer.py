@@ -184,6 +184,83 @@ _settings = _FirewallSettings()
 _pg        = _PromptGuardScanner()
 
 
+# ── AIDefence signature augmentation ──────────────────────────────────────────
+# A deterministic signature pack layered on top of PromptGuard. Runs even when
+# llamafirewall is absent, so a baseline of injection defence is always active.
+# The enable/threshold flags live in the JSON ``Settings`` store (same place the
+# Settings UI writes them), so we read them straight from the Settings object —
+# attached once at API init via ``attach_settings`` — rather than the SQLite
+# ``settings`` table, which is never populated for these keys.
+
+_settings_obj = None  # core.settings.Settings handle, attached at API init
+
+
+def attach_settings(settings) -> None:
+    """Give this module the JSON Settings object so AIDefence flags reflect the UI."""
+    global _settings_obj
+    _settings_obj = settings
+
+
+def _aidefence_config() -> tuple[bool, float]:
+    if _settings_obj is None:
+        # Not yet wired (e.g. unit tests, early startup): safe default — on.
+        return True, BLOCK_THRESHOLD
+    try:
+        enabled = bool(_settings_obj.get("aidefence_signatures_enabled", True))
+    except Exception:
+        enabled = True
+    try:
+        threshold = float(_settings_obj.get("aidefence_block_threshold", BLOCK_THRESHOLD))
+    except Exception:
+        threshold = BLOCK_THRESHOLD
+    return enabled, threshold
+
+
+def _apply_aidefence(raw: dict, text: str) -> tuple[dict, bool]:
+    """Combine a PromptGuard ``raw`` result with the AIDefence signature scan.
+
+    Returns ``(merged_raw, aidefence_ran)``. The merged result keeps the worst
+    of the two verdicts/scores. A critical signature, or a combined score at or
+    above the configured block threshold, forces a block — even if PromptGuard
+    was unavailable (``skipped``/``degraded``).
+    """
+    enabled, threshold = _aidefence_config()
+    if not enabled:
+        return raw, False
+    try:
+        from services import aidefence_signatures
+        sig = aidefence_signatures.scan(text)
+    except Exception as exc:
+        log.debug("AIDefence scan skipped: %s", exc)
+        return raw, False
+
+    base_score = raw.get("score") or 0.0
+    combined = max(base_score, sig["score"])
+    verdict = raw.get("verdict", "pass")
+    reason = raw.get("reason", "")
+
+    if sig["is_critical"] or combined >= threshold:
+        verdict = "block"
+        reason = sig["reason"] or reason or "AIDefence: critical injection signature"
+    elif combined >= WARN_THRESHOLD and verdict in ("pass", "skipped"):
+        verdict = "warn"
+        reason = sig["reason"] or reason
+    elif sig["matches"] and verdict == "skipped":
+        # Signatures ran even though PromptGuard didn't — surface as pass-with-score
+        # so the turn still proceeds but the score is recorded.
+        verdict = "pass"
+        reason = sig["reason"] or reason
+
+    merged = dict(raw)
+    merged["verdict"] = verdict
+    merged["score"] = combined
+    merged["reason"] = reason
+    # No longer "degraded" if our deterministic layer produced a real signal.
+    if sig["matches"]:
+        merged["degraded"] = False
+    return merged, True
+
+
 # ── Scan result helpers ───────────────────────────────────────────────────────
 
 def _make_result(
@@ -277,10 +354,11 @@ def scan_message(
                 pass
         return result
 
-    raw    = _pg.scan(text)
+    raw           = _pg.scan(text)
+    raw, ad_ran   = _apply_aidefence(raw, text)
     result = _make_result(
         verdict    = raw["verdict"],
-        scanner    = "promptguard",
+        scanner    = "promptguard+aidefence" if ad_ran else "promptguard",
         scan_type  = "user_message",
         score      = raw.get("score"),
         reason     = raw.get("reason", ""),
@@ -329,9 +407,11 @@ def scan_document(
     chunks = _chunk_text(content, CHUNK_SIZE)
     t0     = time.monotonic()
     worst  = {"verdict": "pass", "score": 0.0, "reason": "", "degraded": False}
+    ad_ran = False
 
     for chunk in chunks:
-        raw = _pg.scan(chunk)
+        raw, ran = _apply_aidefence(_pg.scan(chunk), chunk)
+        ad_ran = ad_ran or ran
         if raw.get("score") and (raw["score"] > (worst["score"] or 0.0)):
             worst = raw
         if raw["verdict"] == "block":
@@ -344,7 +424,7 @@ def scan_document(
 
     result = _make_result(
         verdict    = worst["verdict"],
-        scanner    = "promptguard",
+        scanner    = "promptguard+aidefence" if ad_ran else "promptguard",
         scan_type  = "document",
         score      = worst.get("score"),
         reason     = worst.get("reason", ""),

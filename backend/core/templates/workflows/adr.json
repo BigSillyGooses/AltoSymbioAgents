@@ -1,0 +1,30 @@
+{
+  "id": "adr",
+  "name": "Architecture Decision Record",
+  "description": "Produce a well-reasoned ADR: context, options, decision, and consequences.",
+  "tasks": [
+    {
+      "name": "context",
+      "agent_role": "analyst",
+      "prompt": "Describe the architectural context and problem that requires a decision. State the forces at play and the constraints.\n\nDECISION TOPIC:\n{{input}}"
+    },
+    {
+      "name": "options",
+      "agent_role": "reviewer",
+      "depends_on": ["context"],
+      "prompt": "Enumerate the candidate options that address the context. For each option give its pros, cons, and risks."
+    },
+    {
+      "name": "decision",
+      "agent_role": "writer",
+      "depends_on": ["options"],
+      "prompt": "Select the best option and justify the decision against the forces and constraints from the context."
+    },
+    {
+      "name": "consequences",
+      "agent_role": "writer",
+      "depends_on": ["decision"],
+      "prompt": "Write the final ADR in the standard format (Title, Status: Proposed, Context, Decision, Consequences), incorporating the positive and negative consequences of the chosen option."
+    }
+  ]
+}

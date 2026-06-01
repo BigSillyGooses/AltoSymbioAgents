@@ -1132,6 +1132,31 @@ def finalize_turn(state: TurnState) -> dict:
     budget_warning = close_result.budget_warning
     orch._turn_lifecycle.maybe_auto_title(ctx, response_text)
 
+    # ReasoningBank-lite: record routing decision + outcome (flag-gated,
+    # best-effort). Mirrors the legacy send() path.
+    if orch._settings.get("trajectory_guidance_enabled", False):
+        try:
+            from services import trajectory_store
+            decision = state.get("decision")
+            trajectory_store.record(
+                conversation_id=conversation_id,
+                turn_id=ctx.turn_id,
+                task_text=user_message,
+                agent_id=getattr(decision, "agent_id", None),
+                skill_matched=getattr(decision, "skill_matched", None),
+                backend=getattr(decision, "backend", route_model),
+                model_name=model_name,
+                routing_score=getattr(decision, "score", None),
+                route_reasoning=route_reason,
+                quality_verdict=(mast_category if turn_failed else "success"),
+                had_error=turn_failed,
+                response_empty=response_empty,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+            )
+        except Exception as exc:
+            log.debug("trajectory record skipped: %s", exc)
+
     orch.memory.add_to_buffer(conversation_id, "user", user_message)
     orch.memory.add_to_buffer(conversation_id, "assistant", response_text)
     orch.memory.extract_facts(conversation_id, user_message, response_text)

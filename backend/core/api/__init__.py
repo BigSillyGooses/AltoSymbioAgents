@@ -88,6 +88,8 @@ from .settings import SettingsAPI
 from .mcp import MCPAPI
 from .lifecycle import LifecycleAPI
 from .escalation import EscalationAPI
+from .workers import WorkersAPI
+from .workflows import WorkflowsAPI
 
 
 class API:
@@ -160,6 +162,9 @@ class API:
         def _firewall_init():
             has_key = bool(self._settings.get("claude_api_key", "").strip())
             input_sanitizer.set_firewall_enabled(has_key)
+            # Let AIDefence read its enable/threshold flags from the live Settings
+            # store so a UI toggle actually takes effect.
+            input_sanitizer.attach_settings(self._settings)
             return has_key
         self._safe_init("firewall", _firewall_init)
 
@@ -226,6 +231,8 @@ class API:
         self._mcp_api = MCPAPI(self)
         self._lifecycle_api = LifecycleAPI(self)
         self._escalation_api = EscalationAPI(self)
+        self._workers_api = WorkersAPI(self)
+        self._workflows_api = WorkflowsAPI(self)
 
     # ── Deferred initialization ───────────────────────────────────────────────
 
@@ -1016,6 +1023,43 @@ class API:
 
     def refresh_mcp_registry(self):
         return self._mcp_api.refresh_mcp_registry()
+
+    # ── Background workers ────────────────────────────────────────────────────
+
+    def workers_list(self):
+        return self._workers_api.workers_list()
+
+    def workers_list_tasks(self, limit=50):
+        return self._workers_api.workers_list_tasks(limit)
+
+    def workers_get_task(self, task_id):
+        return self._workers_api.workers_get_task(task_id)
+
+    def workers_run(self, worker, params=None):
+        return self._workers_api.workers_run(worker, params)
+
+    # ── Workflows ─────────────────────────────────────────────────────────────
+
+    def workflows_list(self, limit=50):
+        return self._workflows_api.workflows_list(limit)
+
+    def workflows_get(self, workflow_id):
+        return self._workflows_api.workflows_get(workflow_id)
+
+    def workflows_templates(self):
+        return self._workflows_api.workflows_templates()
+
+    def workflows_create(self, name, tasks):
+        return self._workflows_api.workflows_create(name, tasks)
+
+    def workflows_from_template(self, template_id, input_text, run=False):
+        return self._workflows_api.workflows_from_template(template_id, input_text, run)
+
+    def workflows_run(self, workflow_id):
+        return self._workflows_api.workflows_run(workflow_id)
+
+    def workflows_resume(self, workflow_id):
+        return self._workflows_api.workflows_resume(workflow_id)
 
     # ── Lifecycle (Phase 4) ──────────────────────────────────────────────────
 
