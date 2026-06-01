@@ -19,6 +19,7 @@ export type ActiveView =
   | "models"
   | "prompts"
   | "saved_prompts"
+  | "design"
   | "mcp"
   | "security"
   | "safety"

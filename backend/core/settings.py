@@ -334,6 +334,23 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     "voice_transcribe_timeout_sec":  (float, 600.0),
     "voice_synthesize_timeout_sec":  (float,  60.0),
 
+    # Design Studio. When enabled, every chat turn injects a designer
+    # directive + the active DESIGN.md design system + universal craft rules
+    # into the system prompt, so the agent emits a self-contained HTML
+    # <artifact> the renderer previews in a sandboxed iframe. Default off so a
+    # fresh install behaves exactly as before until the user opts in.
+    # ``design_system_id`` is the folder name under the vendored
+    # core/assets/design/design-systems/ tree (empty = no brand system, craft
+    # rules only). Options are filled dynamically at manifest-build time from
+    # the asset loader, like ``default_agent_id``.
+    "design_studio_enabled":         (bool,  False),
+    "design_system_id":              (str,   ""),
+    # Optional skill (folder name under core/assets/design/skills/) selecting
+    # the artifact workflow — landing page, dashboard, deck, etc. Empty = the
+    # general designer directive only. Options filled dynamically from the
+    # vendored skills catalog, like ``design_system_id``.
+    "design_skill_id":               (str,   ""),
+
     # Agent / project
     "agent_project_root":            (str,   ""),
 
@@ -785,6 +802,31 @@ FIELD_METADATA: dict[str, dict] = {
         ],
     },
 
+    # ── Design Studio ─────────────────────────────────────────────────────────
+    "design_studio_enabled": {
+        "label":       "Enable Design Studio",
+        "description": "Let agents generate self-contained HTML design artifacts (landing pages, dashboards, decks) rendered in a sandboxed live preview.",
+        "type":        "bool",
+        "group":       "design",
+    },
+    "design_system_id": {
+        "label":       "Design system",
+        "description": "Brand design system whose tokens (color, type, spacing) guide generated artifacts. Leave blank for craft rules only.",
+        "type":        "enum",
+        "group":       "design",
+        # Options are populated dynamically at manifest-build time from the
+        # vendored design-system catalog — a single blank default here so the
+        # renderer always has something to show.
+        "options":     [{"value": "", "label": "— No brand system (craft rules only) —"}],
+    },
+    "design_skill_id": {
+        "label":       "Skill",
+        "description": "Artifact workflow the agent follows (landing page, dashboard, deck…). Leave blank for the general designer directive.",
+        "type":        "enum",
+        "group":       "design",
+        "options":     [{"value": "", "label": "— General (no specific skill) —"}],
+    },
+
     # ── Updates ───────────────────────────────────────────────────────────────
     "update_mechanism": {
         "label":       "Update mechanism",
@@ -1088,6 +1130,8 @@ GROUPS_META: list[dict] = [
      "description": "Classifier that picks Claude vs local models per turn."},
     {"id": "appearance",   "label": "Appearance",
      "description": "Theme, token display, and other display preferences."},
+    {"id": "design",       "label": "Design Studio",
+     "description": "Generate HTML design artifacts styled by a brand design system."},
     {"id": "updates",      "label": "Updates",
      "description": "How the app checks for and applies new versions."},
     {"id": "rag",          "label": "Knowledge base",

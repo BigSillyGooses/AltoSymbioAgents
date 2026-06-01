@@ -232,6 +232,7 @@ export function SettingsPanel() {
       <ManifestGroupSection groupId="updates"    manifest={manifest} onSave={save} />
       <ManifestGroupSection groupId="budget"     manifest={manifest} onSave={save} />
       <ManifestGroupSection groupId="appearance" manifest={manifest} onSave={save} />
+      <ManifestGroupSection groupId="design"     manifest={manifest} onSave={save} />
 
       {/* ── Voice (hand-coded: asset status + modal trigger) ─────────────── */}
       <section className="card" data-testid="settings-voice-section">

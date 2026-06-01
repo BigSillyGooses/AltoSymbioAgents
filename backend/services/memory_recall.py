@@ -46,6 +46,7 @@ class MemoryRecallResult:
     mem_suffix:     str
     full_system:    str
     guidance_block: str = ""
+    design_block:   str = ""
 
 
 class MemoryRecall:
@@ -75,8 +76,10 @@ class MemoryRecall:
         """
         mem = self.memory.get_context(conversation_id, user_message)
         guidance_block = self._guidance_block(user_message, agent)
+        design_block = self._design_block()
         return self._assemble(
             mem, system_prompt, allowed_tools, agent, guidance_block,
+            design_block,
         )
 
     def trim_for_complexity(
@@ -105,7 +108,7 @@ class MemoryRecall:
         result.mem.rag_chunks = result.mem.rag_chunks[:max_items]
         return self._assemble(
             result.mem, system_prompt, allowed_tools, agent,
-            result.guidance_block,
+            result.guidance_block, result.design_block,
         )
 
     def maybe_summarize(self, conversation_id: str) -> None:
@@ -134,14 +137,15 @@ class MemoryRecall:
         allowed_tools: Optional[list],
         agent: Optional[dict],
         guidance_block: str = "",
+        design_block: str = "",
     ) -> MemoryRecallResult:
         """Build (mem_suffix, full_system) from the contributing parts.
 
         Pre-Layer-3 the orchestrator had two near-identical copies of this
         logic — once at initial recall, once after the RAG trim. Centralising
         here makes RAG-trim correctness a one-line concern. ``guidance_block``
-        (Feature 2) is computed once in ``recall`` and threaded through so it
-        survives the RAG-trim rebuild.
+        (Feature 2) and ``design_block`` (Design Studio) are computed once in
+        ``recall`` and threaded through so they survive the RAG-trim rebuild.
         """
         mem_suffix = mem.to_system_suffix()
         full_system = system_prompt
@@ -155,9 +159,11 @@ class MemoryRecall:
                 full_system += mcp_block
         if guidance_block:
             full_system += guidance_block
+        if design_block:
+            full_system += design_block
         return MemoryRecallResult(
             mem=mem, mem_suffix=mem_suffix, full_system=full_system,
-            guidance_block=guidance_block,
+            guidance_block=guidance_block, design_block=design_block,
         )
 
     def _guidance_block(self, user_message: str, agent: Optional[dict]) -> str:
@@ -182,6 +188,22 @@ class MemoryRecall:
             return guidance.format_block(rules)
         except Exception as exc:
             log.debug("guidance block skipped: %s", exc)
+            return ""
+
+    def _design_block(self) -> str:
+        """Design Studio: inject the designer directive + active DESIGN.md + craft.
+
+        Flag-gated on ``design_studio_enabled`` and best-effort: any failure
+        yields an empty block so the turn proceeds with the base prompt
+        unchanged (and a flag-off turn is byte-identical to today's behavior).
+        Delegates to services.design_studio so the composition logic and its
+        asset reads live in one place.
+        """
+        try:
+            from services import design_studio
+            return design_studio.build_design_block(self._settings)
+        except Exception as exc:
+            log.debug("design block skipped: %s", exc)
             return ""
 
     @staticmethod

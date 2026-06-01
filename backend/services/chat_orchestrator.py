@@ -833,6 +833,7 @@ class ChatOrchestrator:
         voting_message_id: str = "",
         voting_emit=None,
         turn_id: str = "",
+        design_block: str = "",
     ) -> tuple[WorkerResult, list[dict] | None]:
         """Actor: execute against the Reader's plan. Never sees raw user text.
 
@@ -840,6 +841,12 @@ class ChatOrchestrator:
         passes the pre-memory ``system_prompt`` so the Actor does not receive
         retrieved RAG, session facts, or memories through its system prompt.
         The Reader is the single phase that touches retrieved data.
+
+        ``design_block`` (Design Studio) is the exception: it is static,
+        author-controlled directive text (designer charter + DESIGN.md + craft
+        + skill), NOT retrieved data, so it is safe to give the Actor and is
+        required for the Actor to emit an ``<artifact>``. Appending it here also
+        covers the in-actor voting path, which builds on ``actor_system``.
 
         Phase 8: when ``vote`` is True AND the actor's resolved decision
         targets Claude, the single hub_router.invoke is replaced with a
@@ -852,8 +859,11 @@ class ChatOrchestrator:
             "You are the Actor. Use only tools listed in proposed_tools. "
             "You receive a JSON plan; the user's raw message is hidden.",
         )
-        # Compose: actor instructions on top, then the bare persona.
+        # Compose: actor instructions on top, then the bare persona, then the
+        # Design Studio directive (static, safe — see docstring).
         actor_system = actor_system_template + "\n\n" + (full_system or "")
+        if design_block:
+            actor_system += design_block
 
         # Populate the per-task ledger BEFORE the Actor runs so any tool call
         # the Actor proposes is gated against the Reader's allowlist.
@@ -1697,6 +1707,10 @@ class ChatOrchestrator:
                     voting_message_id=asst_msg_id,
                     voting_emit=_emit_event,
                     turn_id=ctx.turn_id,
+                    # Design Studio: the Actor produces the final answer, so it
+                    # needs the design directive even though it's denied the
+                    # RAG-carrying full_system. design_block is static, safe.
+                    design_block=mem_result.design_block,
                 )
                 if actor_voting_samples is not None:
                     voting_samples = actor_voting_samples

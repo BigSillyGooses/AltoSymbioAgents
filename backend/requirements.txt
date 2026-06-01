@@ -45,6 +45,11 @@ rank-bm25>=0.2.2
 # services/mcp_credentials.py.
 keyring>=24.0.0
 
+# ── Design Studio ───────────────────────────────────────────────────────────
+# PyYAML parses SKILL.md YAML front-matter (nested `od:` blocks with
+# lists-of-objects) in services/design_skills.py. Pure-Python, tiny.
+PyYAML>=6.0
+
 # ── Multi-provider LLM adapter (BYO-key path) ───────────────────────────────
 # LiteLLM normalises 100+ provider APIs (OpenAI / Gemini / Groq / Mistral /
 # DeepSeek / Grok / Cohere / Ollama, etc.) behind a single OpenAI-compatible

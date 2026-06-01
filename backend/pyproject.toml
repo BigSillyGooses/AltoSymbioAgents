@@ -48,6 +48,9 @@ dependencies = [
   "sqlite-vec>=0.1.6",
   "rank-bm25>=0.2.2",
   "keyring>=24.0.0",
+  # Design Studio: robust parsing of SKILL.md YAML front-matter (nested
+  # `od:` blocks with lists-of-objects). Pure-Python, tiny, ubiquitous.
+  "PyYAML>=6.0",
 ]
 
 [project.scripts]
@@ -78,4 +81,8 @@ exclude = ["tests*"]
 # `Path(__file__).resolve().parent / "config" / "models.json"` resolve to
 # correctly from inside the `core` package. The original commit-5 TODO
 # about packaged-mode data files is therefore resolved at commit 3.
-core = ["templates/*", "config/*"]
+# assets/design/ holds the vendored Open Design catalog (design-systems/*/
+# DESIGN.md + craft/*.md) loaded by services/design_assets.py via
+# paths.design_assets_dir() (`Path(__file__).resolve().parent / "assets" /
+# "design"`). The recursive `**` glob (setuptools>=62) carries the whole tree.
+core = ["templates/*", "config/*", "assets/design/**/*"]

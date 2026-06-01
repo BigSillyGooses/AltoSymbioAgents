@@ -39,6 +39,8 @@ import "highlight.js/styles/atom-one-light.css";
 import "katex/dist/katex.min.css";
 
 import { Voice } from "@/api/client";
+import { ArtifactView } from "./design/ArtifactView";
+import { splitMessage } from "./design/artifactParser";
 
 interface MessageRendererProps {
   content: string;
@@ -78,28 +80,64 @@ export function MessageRenderer({
   if (role !== "assistant") {
     return <span className="whitespace-pre-wrap">{content}</span>;
   }
+
+  // Design Studio: assistant messages may embed one or more
+  // <artifact type="text/html">…</artifact> blocks. Split the buffer into
+  // ordered segments so HTML artifacts render in a sandboxed preview while the
+  // surrounding prose keeps the normal markdown path. The common case (no
+  // artifact) hits the fast path below and renders exactly as before, so
+  // non-design chats are byte-for-byte unchanged.
+  const segments = splitMessage(content);
+  const hasArtifact = segments.some((s) => s.kind === "artifact");
+
   return (
     <div className="markdown-body whitespace-normal">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[
-          [rehypeHighlight, { detect: true, ignoreMissing: true }],
-          // Defensive: rehype-katex catches syntax errors by default and
-          // renders the raw expression with an error color, so a
-          // mid-stream half-written `$$\sum_{i=1` (once the closing $$
-          // arrives) won't throw out of the render. `strict: "ignore"`
-          // silences warnings for unknown commands.
-          [rehypeKatex, { throwOnError: false, strict: "ignore" }],
-        ]}
-        components={MARKDOWN_COMPONENTS}
-        skipHtml
-      >
-        {content}
-      </ReactMarkdown>
+      {!hasArtifact ? (
+        <MarkdownBlock content={content} />
+      ) : (
+        segments.map((seg, i) =>
+          seg.kind === "text" ? (
+            seg.text.trim().length > 0 ? (
+              <MarkdownBlock key={i} content={seg.text} />
+            ) : null
+          ) : (
+            <ArtifactView
+              key={seg.identifier || i}
+              title={seg.title}
+              identifier={seg.identifier}
+              content={seg.content}
+              closed={seg.closed}
+            />
+          ),
+        )
+      )}
       {voiceOutputEnabled && content.trim().length > 0 && (
         <SpeakerButton text={content} />
       )}
     </div>
+  );
+}
+
+// A single markdown text segment. Extracted so the assistant renderer can
+// interleave prose and artifact previews without duplicating the plugin set.
+function MarkdownBlock({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[
+        [rehypeHighlight, { detect: true, ignoreMissing: true }],
+        // Defensive: rehype-katex catches syntax errors by default and
+        // renders the raw expression with an error color, so a
+        // mid-stream half-written `$$\sum_{i=1` (once the closing $$
+        // arrives) won't throw out of the render. `strict: "ignore"`
+        // silences warnings for unknown commands.
+        [rehypeKatex, { throwOnError: false, strict: "ignore" }],
+      ]}
+      components={MARKDOWN_COMPONENTS}
+      skipHtml
+    >
+      {content}
+    </ReactMarkdown>
   );
 }
 
@@ -123,6 +161,8 @@ function SpeakerButton({ text }: { text: string }) {
   // is announced as "[code]" rather than enumerating every character.
   const _sanitize = (raw: string): string => {
     let s = raw;
+    // Design Studio artifacts are full HTML documents — never read them aloud.
+    s = s.replace(/<artifact\b[^>]*>[\s\S]*?<\/artifact>/g, " (design artifact) ");
     s = s.replace(/```[\s\S]*?```/g, " (code) ");
     s = s.replace(/`[^`]*`/g, " (code) ");
     s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, " (image) ");

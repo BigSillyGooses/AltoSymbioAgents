@@ -1061,3 +1061,42 @@ export const Voice = {
       tts_voice_id: tts_voice_id ?? "",
     }),
 };
+
+// ── Design Studio ─────────────────────────────────────────────────────────────
+// Note: the design-system / skill catalog is surfaced through the settings
+// manifest (dynamic enum options), so this client only covers the saved
+// artifact library — the part the renderer talks to directly.
+
+export interface SavedArtifactSummary {
+  id:            string;
+  title:         string;
+  identifier:    string;
+  design_system: string | null;
+  skill:         string | null;
+  created_at:    string;
+}
+
+export interface SavedArtifact extends SavedArtifactSummary {
+  content: string;
+}
+
+export interface SaveArtifactPayload {
+  title:          string;
+  identifier?:    string;
+  content:        string;
+  design_system?: string | null;
+  skill?:         string | null;
+}
+
+export const Design = {
+  listArtifacts: () =>
+    api.get<{ artifacts: SavedArtifactSummary[] }>("/api/design/artifacts"),
+  getArtifact: (id: string) =>
+    api.get<SavedArtifact>(`/api/design/artifacts/${encodeURIComponent(id)}`),
+  saveArtifact: (payload: SaveArtifactPayload) =>
+    api.post<SavedArtifact>("/api/design/artifacts", payload),
+  deleteArtifact: (id: string) =>
+    api.delete<{ ok: boolean; id: string }>(
+      `/api/design/artifacts/${encodeURIComponent(id)}`,
+    ),
+};

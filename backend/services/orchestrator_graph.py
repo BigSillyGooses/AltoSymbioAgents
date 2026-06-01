@@ -834,6 +834,10 @@ def phase6_split(state: TurnState) -> dict:
             voting_message_id=state["asst_msg_id"],
             voting_emit=_act_emit,
             turn_id=ctx.turn_id,
+            # Design Studio: give the Actor the static design directive (parity
+            # with the legacy engine); without it an enabled Studio turn that
+            # routes through the Reader/Actor split emits no <artifact>.
+            design_block=state["mem_result"].design_block,
         )
         final = orch._synthesize_phase(reader_output, actor_result)
         update: dict[str, Any] = {
