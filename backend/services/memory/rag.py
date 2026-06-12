@@ -46,6 +46,21 @@ class _RagAssembler:
         history:         SessionHistory,
         agent_id:        str | None = None,
     ) -> MemoryContext:
+        from services import perf_metrics
+        with perf_metrics.span("retrieval_total"):
+            return self._get_context(
+                conversation_id, user_message, buffer_snapshot, history,
+                agent_id=agent_id,
+            )
+
+    def _get_context(
+        self,
+        conversation_id: str,
+        user_message:    str,
+        buffer_snapshot: list,
+        history:         SessionHistory,
+        agent_id:        str | None = None,
+    ) -> MemoryContext:
         ctx = MemoryContext()
         ctx.recent_messages = buffer_snapshot
 

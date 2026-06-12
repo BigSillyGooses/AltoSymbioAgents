@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Callable
 
 import db
+from services import perf_metrics
 
 log = logging.getLogger("semantic_search")
 
@@ -77,7 +78,8 @@ def _embed(texts: list[str]) -> list[list[float]]:
     """Embed texts using the initialized embedding function."""
     if _embed_fn is None:
         raise RuntimeError("Embedding function not initialized")
-    return _embed_fn(texts)
+    with perf_metrics.span("embed"):
+        return _embed_fn(texts)
 
 
 def _serialize(vec: list[float]) -> bytes:
@@ -309,11 +311,13 @@ def search_documents_hybrid(
 
     # ── BM25 candidates ──────────────────────────────────────────────────────
     if method in ("hybrid", "bm25"):
-        bm25_results = _bm25_search(query_text, n=top_k * 5)
+        with perf_metrics.span("bm25"):
+            bm25_results = _bm25_search(query_text, n=top_k * 5)
 
     # ── Vector candidates ─────────────────────────────────────────────────────
     if method in ("hybrid", "vector"):
-        vector_results = search_documents(query_text, top_k=top_k * 5, doc_type=doc_type)
+        with perf_metrics.span("vec_search"):
+            vector_results = search_documents(query_text, top_k=top_k * 5, doc_type=doc_type)
 
     # ── Vector-only: return as-is ─────────────────────────────────────────────
     if method == "vector":
@@ -351,7 +355,8 @@ def search_documents_hybrid(
     vector_rank_map  = {r["doc_id"]: i + 1 for i, r in enumerate(vector_results)}
     vector_data_map  = {r["doc_id"]: r for r in vector_results}
 
-    fused = reciprocal_rank_fusion([bm25_ids, vector_ids], k=RRF_K)
+    with perf_metrics.span("rrf"):
+        fused = reciprocal_rank_fusion([bm25_ids, vector_ids], k=RRF_K)
 
     out = []
     seen: set[str] = set()

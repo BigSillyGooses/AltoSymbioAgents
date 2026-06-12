@@ -41,6 +41,21 @@ from anthropic import Anthropic
 from services.llm_interface import LLMClient
 
 
+def _cache_tokens(usage) -> tuple[int, int]:
+    """Read prompt-cache token counts off an Anthropic usage object.
+
+    Returns ``(cache_creation_tokens, cache_read_tokens)``. Defensive:
+    older SDK versions / models without caching simply lack the fields,
+    and the API may return None — both degrade to 0 so callers can add
+    the keys unconditionally (Phase 1 usage telemetry).
+    """
+    if usage is None:
+        return 0, 0
+    creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    return int(creation), int(read)
+
+
 class ClaudeClient(LLMClient):
     """
     Wrapper for the Anthropic Messages API.
@@ -184,10 +199,15 @@ class ClaudeClient(LLMClient):
             "messages": messages,
         }
         response = self._client.messages.create(**kwargs)
+        cache_creation, cache_read = _cache_tokens(response.usage)
         return {
             "text": response.content[0].text,
             "input_tokens": response.usage.input_tokens,
             "output_tokens": response.usage.output_tokens,
+            # Phase 1 telemetry: prompt-cache hit/miss accounting. Purely
+            # additive — existing keys/callers are unchanged.
+            "cache_creation_tokens": cache_creation,
+            "cache_read_tokens": cache_read,
         }
 
     def stream_multi_turn(
@@ -237,14 +257,19 @@ class ClaudeClient(LLMClient):
             "text": result.get("text", ""),
             "input_tokens": int(result.get("input_tokens", 0)),
             "output_tokens": int(result.get("output_tokens", 0)),
+            "cache_creation_tokens": int(result.get("cache_creation_tokens", 0) or 0),
+            "cache_read_tokens": int(result.get("cache_read_tokens", 0) or 0),
         }
 
     def stream_unified(self, system, messages, on_token, max_tokens=4096):
         text, usage = self.stream_multi_turn(system, messages, on_token, max_tokens=max_tokens)
+        cache_creation, cache_read = _cache_tokens(usage)
         return {
             "text": text or "",
             "input_tokens": (getattr(usage, "input_tokens", 0) or 0) if usage else 0,
             "output_tokens": (getattr(usage, "output_tokens", 0) or 0) if usage else 0,
+            "cache_creation_tokens": cache_creation,
+            "cache_read_tokens": cache_read,
         }
 
     def is_available(self) -> bool:
@@ -288,12 +313,15 @@ class ClaudeClient(LLMClient):
                     "name": block.name,
                     "input": block.input,
                 })
+        cache_creation, cache_read = _cache_tokens(response.usage)
         return {
             "content": content,
             "stop_reason": response.stop_reason,
             "usage": {
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
+                "cache_creation_tokens": cache_creation,
+                "cache_read_tokens": cache_read,
             },
         }
 

@@ -1092,6 +1092,17 @@ _MIGRATIONS = [
         )""",
         "CREATE INDEX IF NOT EXISTS idx_design_artifacts_created ON design_artifacts(created_at)",
     ]),
+
+    # ── Perf Phase 1: prompt-cache + cost-prediction telemetry ───────────────
+    # cache_read_tokens / cache_creation_tokens record Anthropic prompt-cache
+    # usage per turn (previously discarded by claude_client). predicted_cost_usd
+    # is reserved for the Phase 4 pre-turn cost predictor — added now so the
+    # token_usage migration list changes once. Existing rows keep the defaults.
+    ("perf_phase1.cache_telemetry", [
+        "ALTER TABLE token_usage ADD COLUMN cache_read_tokens INTEGER DEFAULT 0",
+        "ALTER TABLE token_usage ADD COLUMN cache_creation_tokens INTEGER DEFAULT 0",
+        "ALTER TABLE token_usage ADD COLUMN predicted_cost_usd REAL",
+    ]),
 ]
 
 

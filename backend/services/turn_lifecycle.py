@@ -113,6 +113,8 @@ class TurnLifecycle:
         tokens_in: int,
         tokens_out: int,
         cost: float,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
     ) -> CloseResult:
         """Persist the assistant turn atomically.
 
@@ -131,6 +133,10 @@ class TurnLifecycle:
         Auto-title is INTENTIONALLY outside the transaction: it makes a
         blocking LLM call we don't want to hold locks across. The
         helper ``maybe_auto_title`` runs after commit.
+
+        ``cache_read_tokens`` / ``cache_creation_tokens`` (Perf Phase 1)
+        record Anthropic prompt-cache usage for this turn; both default
+        to 0 so existing callers are unchanged.
         """
         reply_text_for_storage = redact(response_text)
         resp_now = datetime.now(timezone.utc).isoformat()
@@ -159,12 +165,14 @@ class TurnLifecycle:
             )
             conn.execute(
                 "INSERT INTO token_usage (id, conversation_id, model, tokens_in, "
-                "tokens_out, cost_usd, routed_reason, created_at, turn_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "tokens_out, cost_usd, routed_reason, created_at, turn_id, "
+                "cache_read_tokens, cache_creation_tokens) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     str(uuid.uuid4()), ctx.conversation_id, model_name,
                     tokens_in, tokens_out, cost, route_reason, resp_now,
                     ctx.turn_id,
+                    int(cache_read_tokens or 0), int(cache_creation_tokens or 0),
                 ),
             )
             if ctx.budget > 0:

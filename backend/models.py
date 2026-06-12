@@ -585,6 +585,10 @@ class WorkerResult:
     model_name:    str
     input_tokens:  int = 0
     output_tokens: int = 0
+    # Phase 1 telemetry: Anthropic prompt-cache accounting for this call.
+    # Always 0 for backends without prefix caching (local, litellm).
+    cache_creation_tokens: int = 0
+    cache_read_tokens:     int = 0
     had_error:     bool = False
     # QLPT Stage 1: per-token logprobs from a local generation, when the
     # backend surfaces them. Tuple (not list) for frozen-dataclass safety.

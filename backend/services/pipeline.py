@@ -283,6 +283,22 @@ class PipelineExecutor:
         on_token: Optional[Callable] = None,
     ) -> PipelineResult:
         """Execute the full pipeline: decompose -> specialists -> synthesise."""
+        from services import perf_metrics
+        with perf_metrics.span("pipeline_total"):
+            return self._run_inner(
+                team_id, user_message, conversation_id, history,
+                on_event=on_event, on_token=on_token,
+            )
+
+    def _run_inner(
+        self,
+        team_id: str,
+        user_message: str,
+        conversation_id: str,
+        history: list,
+        on_event: Optional[Callable] = None,
+        on_token: Optional[Callable] = None,
+    ) -> PipelineResult:
 
         def emit(event_type: str, data: dict):
             if on_event:

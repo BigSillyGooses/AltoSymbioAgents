@@ -130,6 +130,48 @@ def _estimate_cost(model: str, tokens_in: int, tokens_out: int,
     return (tokens_in * price_in + tokens_out * price_out) / 1_000_000
 
 
+# Anthropic prompt-cache billing multipliers (relative to the input price):
+# cache reads bill at 0.1×, cache writes (creation) at 1.25×. Source: the
+# Anthropic prompt-caching pricing docs; same numbers the Phase 1 plan cites.
+_CACHE_READ_PRICE_MULT = 0.1
+_CACHE_WRITE_PRICE_MULT = 1.25
+
+
+def _estimate_cost_cached(model: str, tokens_in: int, tokens_out: int,
+                          cache_read_tokens: int, cache_creation_tokens: int,
+                          settings=None) -> float:
+    """Cache-aware variant of ``_estimate_cost`` (Perf Phase 1).
+
+    Used ONLY when the turn reported non-zero prompt-cache token counts —
+    callers with both fields at 0 take the plain ``_estimate_cost`` path so
+    pre-existing behavior stays byte-identical. ``tokens_in`` is the
+    *uncached* portion of the input (the API's ``input_tokens`` already
+    excludes cached tokens); cached reads/writes are billed at their
+    Anthropic multipliers on the same per-model input price.
+    """
+    if not model or "claude" not in model.lower():
+        return 0.0
+
+    from core.model_catalog import get_catalog
+
+    user_overrides: dict[str, tuple[float, float]] | None = None
+    if settings:
+        custom = settings.get("model_prices", None)
+        if custom and isinstance(custom, dict):
+            user_overrides = {}
+            for key, val in custom.items():
+                if isinstance(val, (list, tuple)) and len(val) == 2:
+                    user_overrides[key] = (float(val[0]), float(val[1]))
+
+    price_in, price_out = get_catalog().prices_for_model(model, user_overrides)
+    return (
+        tokens_in * price_in
+        + cache_read_tokens * price_in * _CACHE_READ_PRICE_MULT
+        + cache_creation_tokens * price_in * _CACHE_WRITE_PRICE_MULT
+        + tokens_out * price_out
+    ) / 1_000_000
+
+
 def _log_router_event(
     conversation_id: str,
     message_preview: str,
@@ -1609,6 +1651,12 @@ class ChatOrchestrator:
         response_text = ""
         tokens_in = 0
         tokens_out = 0
+        # Perf Phase 1: prompt-cache accounting for this turn. Only the
+        # monolithic worker dispatch below populates these today; every
+        # other path (voting, split, CaMeL, vision) leaves them at 0,
+        # which keeps the cost math on those paths byte-identical.
+        cache_read_tokens = 0
+        cache_creation_tokens = 0
         model_name = target.model_name
         had_error = False
 
@@ -1898,6 +1946,8 @@ class ChatOrchestrator:
                 response_text = worker_result.text
                 tokens_in = worker_result.input_tokens
                 tokens_out = worker_result.output_tokens
+                cache_read_tokens = worker_result.cache_read_tokens
+                cache_creation_tokens = worker_result.cache_creation_tokens
                 if worker_result.had_error:
                     had_error = True
                 # QLPT Stage 1: hand the worker's per-token logprobs to
@@ -2026,7 +2076,17 @@ class ChatOrchestrator:
         # Phase 8: asst_msg_id was pre-allocated above so the
         # high_stakes_voting_complete event could carry it for the
         # frontend badge; reuse the same id when persisting.
-        cost = _estimate_cost(model_name, tokens_in, tokens_out, self._settings)
+        # Perf Phase 1: when the turn reported prompt-cache activity, bill the
+        # cached portions at their Anthropic multipliers. Turns with zero cache
+        # counts (local models, voting/split paths) take the original cost
+        # path unchanged.
+        if cache_read_tokens or cache_creation_tokens:
+            cost = _estimate_cost_cached(
+                model_name, tokens_in, tokens_out,
+                cache_read_tokens, cache_creation_tokens, self._settings,
+            )
+        else:
+            cost = _estimate_cost(model_name, tokens_in, tokens_out, self._settings)
         close_result = self._turn_lifecycle.close(
             ctx,
             asst_msg_id=asst_msg_id,
@@ -2036,6 +2096,8 @@ class ChatOrchestrator:
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             cost=cost,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
         )
         budget_warning = close_result.budget_warning
         self._turn_lifecycle.maybe_auto_title(ctx, response_text)

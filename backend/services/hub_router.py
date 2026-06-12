@@ -43,6 +43,7 @@ from models import (
     TaskDescriptor,
     WorkerResult,
 )
+from services import perf_metrics
 
 log = logging.getLogger("altosybioagents.hub_router")
 
@@ -481,10 +482,11 @@ class HubRouter:
             )
 
         try:
-            if on_token:
-                result = client.stream_unified(system, messages, on_token, max_tokens=local_max)
-            else:
-                result = client.chat_unified(system, messages, max_tokens=local_max)
+            with perf_metrics.span("model_call"):
+                if on_token:
+                    result = client.stream_unified(system, messages, on_token, max_tokens=local_max)
+                else:
+                    result = client.chat_unified(system, messages, max_tokens=local_max)
             raw_logprobs = result.get("logprobs") if isinstance(result, dict) else None
             return WorkerResult(
                 text=result["text"],
@@ -492,6 +494,10 @@ class HubRouter:
                 model_name=client.client_name(),
                 input_tokens=result.get("input_tokens", 0),
                 output_tokens=result.get("output_tokens", 0),
+                # Phase 1 telemetry: prompt-cache accounting (0 when the
+                # client doesn't report it — local/litellm backends).
+                cache_creation_tokens=result.get("cache_creation_tokens", 0) or 0,
+                cache_read_tokens=result.get("cache_read_tokens", 0) or 0,
                 logprobs=tuple(raw_logprobs) if raw_logprobs else None,
             )
         except Exception as exc:
