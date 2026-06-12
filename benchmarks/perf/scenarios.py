@@ -574,6 +574,24 @@ def run_routing() -> dict:
     ``HubRouter._trajectory_rates`` consumes). Latency rides in the
     ``traj_find_similar`` / ``traj_bias_table`` spans; the recall counts are
     the deterministic part.
+
+    Perf Phase 6 extension: after the raw-recall decisions, the scenario
+    consolidates the 200 trajectories into routing hints and replays the same
+    100 queries through ``hint_table`` (the ``traj_hint_table`` span lives
+    inside it). It reports ``hints_created`` plus a **routing-regret**
+    comparison across three guidance modes — none (a fixed fallback pick),
+    raw ``bias_table`` bias, and consolidated hints with support damping.
+    Regret = the fraction of the 100 decisions that pick an agent whose
+    seeded ground-truth success rate for the query's task family (the
+    fixture's verb prefix) is lower than the best agent's. The two ``…_le_…``
+    metrics encode the expected ordering (hints ≤ raw ≤ none) as 1/0 gates.
+
+    Scenario-level ``merge_sim`` (NOT the production default): the
+    bag-of-words embedder scores same-family paraphrases around 0.37 under
+    the monotonic hint mapping (cross-family pairs land at 0), so 0.3 makes
+    clusters form per task family the way real embeddings form them at the
+    0.75 default. Same spirit as the relaxed min_sim above; min_cluster
+    stays at the production default (3).
     """
     from services import perf_metrics, trajectory_store
 
@@ -600,10 +618,45 @@ def run_routing() -> dict:
         if traj_id is not None:
             seeded += 1
 
+    # Ground truth: per-task-family (verb prefix) per-agent binary success
+    # rate over the SEEDED data — the oracle the regret metric scores
+    # against. Deterministic by construction (pure fixture arithmetic).
+    family_stats: dict[str, dict[str, list[int]]] = {}
+    agents: set[str] = set()
+    for t in fixture["trajectories"]:
+        family = t["task_text"].split()[0]
+        agent = t["agent_id"]
+        agents.add(agent)
+        ok = int(t["quality_verdict"] == "success" and not t["had_error"])
+        stat = family_stats.setdefault(family, {}).setdefault(agent, [0, 0])
+        stat[0] += ok
+        stat[1] += 1
+    ground_truth = {
+        family: {a: s[0] / s[1] for a, s in per_agent.items()}
+        for family, per_agent in family_stats.items()
+    }
+    fallback_agent = sorted(agents)[0]  # deterministic no-guidance pick
+
+    def _regret(query: str, picked: str) -> int:
+        rates = ground_truth.get(query.split()[0], {})
+        if not rates:
+            return 0
+        best = max(rates.values())
+        return int(rates.get(picked, 0.0) < best - 1e-9)
+
+    def _argmax_agent(table: dict[str, float]) -> str:
+        if not table:
+            return fallback_agent
+        # Ties break on agent id so the pick is order-independent.
+        return max(sorted(table), key=lambda a: table[a])
+
     decisions = 0
     similar_hits = 0
     bias_tables_nonempty = 0
     agents_biased = 0
+    regret_none = 0
+    regret_raw = 0
+    raw_disagreements = 0
     # min_sim is relaxed vs the production default (0.6) because the
     # bag-of-words embedder produces lower cosine similarities than the
     # real model for paraphrases; the SQL path being timed is identical.
@@ -617,13 +670,66 @@ def run_routing() -> dict:
         if table:
             bias_tables_nonempty += 1
             agents_biased += len(table)
+        # Regret bookkeeping for the no-guidance and raw-bias modes (the raw
+        # mode reuses the bias_table just computed — pre-consolidation, so
+        # the full 200-trajectory store backs it).
+        regret_none += _regret(query, fallback_agent)
+        raw_pick = _argmax_agent(table)
+        regret_raw += _regret(query, raw_pick)
+        if raw_pick != fallback_agent:
+            raw_disagreements += 1
 
+    # ── Perf Phase 6: consolidation + hint-guided regret ─────────────────────
+    consolidation_settings = {
+        "trajectory_consolidation_min_cluster": 3,
+        "trajectory_hint_merge_sim": 0.3,
+        "trajectory_hint_max_age_days": 90,
+    }
+    trajectories_consolidated = trajectory_store.consolidate(
+        consolidation_settings)
+    import db
+    hints_created = db.fetchone("SELECT COUNT(*) AS c FROM routing_hints")["c"]
+    vec_rows_remaining = db.fetchone(
+        "SELECT COUNT(*) AS c FROM vec_trajectories_map")["c"]
+
+    regret_hints = 0
+    hint_tables_nonempty = 0
+    for query in fixture["queries"]:
+        # traj_hint_table span is recorded INSIDE hint_table.
+        hints = trajectory_store.hint_table(query, top_k=5, min_sim=0.3)
+        if hints:
+            hint_tables_nonempty += 1
+        # Hinted agents: support-damped quality (mirrors HubRouter's
+        # _apply_hint_bias scaling); unhinted agents fall back to the
+        # residual raw bias over the unconsolidated remainder.
+        effective: dict[str, float] = {
+            agent: 0.5 + (quality - 0.5) * min(1.0, support / 5.0)
+            for agent, (quality, support) in hints.items()
+        }
+        residual = trajectory_store.bias_table(query, top_k=5, min_sim=0.3)
+        for agent, rate in residual.items():
+            effective.setdefault(agent, rate)
+        regret_hints += _regret(query, _argmax_agent(effective))
+
+    n = decisions or 1
     return {
         "trajectories_seeded": seeded,
         "decision_count": decisions,
         "similar_hits": similar_hits,
         "bias_tables_nonempty": bias_tables_nonempty,
         "agents_biased": agents_biased,
+        # Perf Phase 6 deterministic metrics.
+        "hints_created": hints_created,
+        "trajectories_consolidated": trajectories_consolidated,
+        "vec_rows_remaining": vec_rows_remaining,
+        "hint_tables_nonempty": hint_tables_nonempty,
+        "raw_pick_disagreements": raw_disagreements,
+        "routing_regret_none": _safe_rate(regret_none, n),
+        "routing_regret_raw": _safe_rate(regret_raw, n),
+        "routing_regret_hints": _safe_rate(regret_hints, n),
+        # 1/0 ordering gates (hints ≤ raw ≤ none) for perf_thresholds.json.
+        "regret_hints_le_raw": int(regret_hints <= regret_raw),
+        "regret_raw_le_none": int(regret_raw <= regret_none),
     }
 
 

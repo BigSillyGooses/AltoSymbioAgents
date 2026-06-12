@@ -39,9 +39,13 @@
       "parallel.specialist_calls": { "min": 6, "max": 6 }
     },
     "routing": {
+      "_comment": "Phase 6. hints_created asserts consolidation produced hints from the 200 seeded trajectories (36 at gate-setting time). The two regret booleans (1/0) encode the guidance-ordering requirement hints <= raw <= none over the 100 decisions; measured at gate-setting time: hints 0.00, raw 0.03, none 0.75.",
       "decision_count": { "min": 100, "max": 100 },
       "similar_hits": { "min": 300 },
-      "bias_tables_nonempty": { "min": 100 }
+      "bias_tables_nonempty": { "min": 100 },
+      "hints_created": { "min": 1 },
+      "regret_hints_le_raw": { "min": 1 },
+      "regret_raw_le_none": { "min": 1 }
     }
   },
   "latency": {
@@ -57,7 +61,8 @@
     },
     "routing": {
       "spans.traj_find_similar.avg_ms": { "max": 50 },
-      "spans.traj_bias_table.avg_ms": { "max": 50 }
+      "spans.traj_bias_table.avg_ms": { "max": 50 },
+      "spans.traj_hint_table.avg_ms": { "max": 50 }
     },
     "team_pipeline": {
       "_comment": "Phase 5 headline. With 4 independent steps at concurrency 3 plus a 2-step dependent chain (simulated 500 ms claude calls, 300 ms local decomposition/synthesis) the ideal ratio is ~0.58; the 0.7 ceiling absorbs scheduler/runner overhead while still failing if parallelism stops delivering. Measured at gate-setting time: 0.589.",

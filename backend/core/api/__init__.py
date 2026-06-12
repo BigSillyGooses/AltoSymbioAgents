@@ -179,6 +179,13 @@ class API:
             lambda: semantic_search.attach_settings(self._settings),
         )
 
+        # Perf Phase 6: the trajectory store reads its consolidation flags
+        # (interval, cluster size, merge similarity) at call time too.
+        def _trajectory_settings():
+            from services import trajectory_store
+            trajectory_store.attach_settings(self._settings)
+        self._safe_init("trajectory_settings", _trajectory_settings)
+
         self._memory = self._safe_init(
             "memory_manager",
             lambda: MemoryManager(

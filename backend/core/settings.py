@@ -313,6 +313,20 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     "trajectory_min_similarity":     (float, 0.6),
     "trajectory_bias_weight":        (float, 0.3),
 
+    # Perf Phase 6 — Trajectory learning v2. When enabled, raw trajectories
+    # are periodically consolidated into compact "routing hints" (one
+    # exemplar per task-family × agent × backend with a graded quality
+    # score and a support count). The router consults hints first (weight
+    # below, damped by support) and falls back to the raw trajectory bias;
+    # consolidated rows are dropped from the brute-force vector table to
+    # bound search cost.
+    "trajectory_consolidation_enabled":        (bool,  False),
+    "trajectory_consolidation_min_cluster":    (int,   3),
+    "trajectory_consolidation_interval_turns": (int,   25),
+    "trajectory_hint_max_age_days":            (int,   90),
+    "trajectory_hint_merge_sim":               (float, 0.75),
+    "trajectory_hint_weight":                  (float, 0.4),
+
     # Feature 2 — Guidance / Constitution compiler. When enabled, project/role
     # rules are stored as embedded shards and only the rules relevant to the
     # current message are injected into the system prompt.
@@ -1228,6 +1242,52 @@ FIELD_METADATA: dict[str, dict] = {
     "trajectory_bias_weight": {
         "label":       "Trajectory bias strength",
         "description": "How strongly past success/failure nudges the skill-match score.",
+        "type":        "float",
+        "group":       "advanced",
+        "min":         0.0,
+        "max":         1.0,
+    },
+    "trajectory_consolidation_enabled": {
+        "label":       "Trajectory consolidation",
+        "description": "Periodically distil raw trajectories into compact routing hints (graded quality + support count) the router consults first.",
+        "type":        "bool",
+        "group":       "advanced",
+    },
+    "trajectory_consolidation_min_cluster": {
+        "label":       "Hint cluster size",
+        "description": "Minimum number of similar same-agent trajectories before they are consolidated into a routing hint.",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         2,
+        "max":         20,
+    },
+    "trajectory_consolidation_interval_turns": {
+        "label":       "Consolidation interval",
+        "description": "Run consolidation inline after this many trajectories have been recorded (the background indexer also runs it).",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         1,
+        "max":         500,
+    },
+    "trajectory_hint_max_age_days": {
+        "label":       "Hint max age (days)",
+        "description": "Routing hints not reinforced for this many days are pruned unless they reached the cluster-size support.",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         1,
+        "max":         3650,
+    },
+    "trajectory_hint_merge_sim": {
+        "label":       "Hint merge similarity",
+        "description": "Minimum vector similarity (0-1) for a new trajectory to merge into an existing routing hint (also the cluster threshold).",
+        "type":        "float",
+        "group":       "advanced",
+        "min":         0.0,
+        "max":         1.0,
+    },
+    "trajectory_hint_weight": {
+        "label":       "Hint bias strength",
+        "description": "How strongly a routing hint nudges the skill-match score (damped until support reaches 5).",
         "type":        "float",
         "group":       "advanced",
         "min":         0.0,

@@ -65,6 +65,11 @@ _ALWAYS_INCLUDED_ROLES: frozenset[str] = frozenset({"coordinator"})
 # stopwords like "and", "the", "is" without maintaining a list).
 _KEYWORD_MIN_LEN: int = 3
 
+# Perf Phase 6: a routing hint's bias delta is damped until its support
+# reaches this many consolidated trajectories (delta *= min(1, support/5)),
+# so a hint distilled from 3 turns nudges less than one backed by dozens.
+_HINT_FULL_SUPPORT: int = 5
+
 # MAST (Multi-Agent System failure Taxonomy, Cemri et al. 2025) 14 codes.
 # Hard-coded so classification never depends on a live network fetch.
 _MAST_CATEGORIES: tuple[str, ...] = (
@@ -345,6 +350,40 @@ class HubRouter:
         adjusted = max(0.0, min(1.0, score + delta))
         return adjusted, delta
 
+    def _hint_rates(self, task_text: str) -> dict[str, tuple[float, int]]:
+        """Per-agent consolidated routing hints, via ONE recall (Perf Phase 6).
+
+        Returns ``{agent_id: (quality, support_count)}`` — empty when
+        ``trajectory_consolidation_enabled`` is off (the default, keeping
+        route() byte-identical) or when no hint matches. Hints are advisory
+        deltas on top of deterministic skill scoring, never an override.
+        """
+        if not self._settings.get("trajectory_consolidation_enabled", False):
+            return {}
+        try:
+            from services import trajectory_store
+            top_k = int(self._settings.get("trajectory_retrieval_top_k", 3) or 3)
+            min_sim = float(self._settings.get("trajectory_min_similarity", 0.6) or 0.6)
+            return trajectory_store.hint_table(task_text, top_k=top_k, min_sim=min_sim)
+        except Exception:
+            return {}
+
+    def _apply_hint_bias(
+        self, score: float, hint: tuple[float, int]
+    ) -> tuple[float, float]:
+        """Nudge a skill-match score by a consolidated routing hint.
+
+        ``delta = hint_weight * (quality - 0.5) * min(1, support/5)`` — the
+        support damping keeps a barely-formed hint (3 turns) from swinging
+        routing as hard as one reinforced dozens of times.
+        """
+        quality, support = hint
+        weight = float(self._settings.get("trajectory_hint_weight", 0.4) or 0.4)
+        damp = min(1.0, max(0, support) / float(_HINT_FULL_SUPPORT))
+        delta = round(weight * (quality - 0.5) * damp, 3)
+        adjusted = max(0.0, min(1.0, score + delta))
+        return adjusted, delta
+
     def route(self, task: TaskDescriptor) -> RoutingDecision:
         """No-agent-specified path. Picks by skill match across all agents."""
         if task.preferred_agent_id:
@@ -357,29 +396,42 @@ class HubRouter:
 
         # ReasoningBank-lite: recall per-agent historical success ONCE for the
         # whole candidate set (one embed/query per turn), then bias each score.
+        # Perf Phase 6: consolidated hints (when enabled) take precedence per
+        # agent; agents without a hint fall back to the raw trajectory bias.
         bias_rates = self._trajectory_rates(task.text)
+        hint_rates = self._hint_rates(task.text)
 
         best_row = None
         best_backend: str = "claude"
         best_score: float = 0.0
         best_skill: str = ""
         best_bias: Optional[float] = None
+        best_hint_support: Optional[int] = None
         for r in rows:
             declared = self._parse_skills(r["skills"])
             score, matched = self._score_match(declared, task)
-            adj_score, bias = self._apply_trajectory_bias(
-                score, bias_rates.get(r["id"])
-            )
+            hint = hint_rates.get(r["id"])
+            if hint is not None:
+                adj_score, bias = self._apply_hint_bias(score, hint)
+                hint_support: Optional[int] = hint[1]
+            else:
+                adj_score, bias = self._apply_trajectory_bias(
+                    score, bias_rates.get(r["id"])
+                )
+                hint_support = None
             if adj_score > best_score:
                 best_score = adj_score
                 best_row = r
                 best_backend = self._resolve_backend(r["model_preference"], task.backend_hint)
                 best_skill = matched
                 best_bias = bias
+                best_hint_support = hint_support
 
         if best_row is not None and best_score >= MIN_SKILL_MATCH_SCORE:
             reasoning = f"skill-match on '{best_skill}' (score {best_score:.2f})"
-            if best_bias is not None:
+            if best_hint_support is not None:
+                reasoning += f"; hint bias {best_bias:+.2f} (support {best_hint_support})"
+            elif best_bias is not None:
                 reasoning += f"; trajectory bias {best_bias:+.2f}"
             return RoutingDecision(
                 agent_id=best_row["id"],

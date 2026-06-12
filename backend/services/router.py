@@ -98,6 +98,14 @@ CONTEXT_EXPANSION_THRESHOLD = 0.5
 # Minimum error rate on local routes before we tighten the threshold.
 ADAPTIVE_ERROR_FLOOR = 0.15
 
+# ── Perf Phase 6: consolidated routing-hint thresholds ────────────────────────
+# A LOCAL-backend hint with at least this much support and quality lets a
+# low-confidence local classification stay local instead of UAR-escalating;
+# quality at/below the weak bound biases the turn toward Claude instead.
+HINT_MIN_SUPPORT = 5
+HINT_STRONG_QUALITY = 0.8
+HINT_WEAK_QUALITY = 0.2
+
 ROUTER_SYSTEM = """You are a task classifier. Given a user message and conversation context, classify it.
 Return ONLY a JSON object:
 {
@@ -209,23 +217,61 @@ class TaskRouter:
             result = self.local.chat(ROUTER_SYSTEM, prompt, max_tokens=250)
             route = RouteDecision.from_json(result)
 
+            # ── Perf Phase 6: consolidated routing hints (flag-gated) ─────────
+            # None unless trajectory_consolidation_enabled AND a hint for the
+            # LOCAL backend matches this task family — so the flag-off control
+            # flow below is untouched. Fail-open by construction.
+            local_hint = self._local_route_hint(message)
+
             # ── UAR escalation: low confidence local -> Claude ────────────────
             # Per-complexity adaptive thresholds: error rates differ sharply
             # between simple/medium/complex buckets, so a single aggregate
             # rate over-tightens simple queries and under-tightens medium ones.
             esc_threshold = self._adaptive_threshold_for(route.complexity) if route.complexity else self._adaptive_threshold()
             if route.model == "local" and route.confidence < esc_threshold:
+                # Strong positive hint: this task family historically goes
+                # well locally — let the low-confidence turn stay local.
+                if (local_hint is not None
+                        and local_hint[1] >= HINT_MIN_SUPPORT
+                        and local_hint[0] >= HINT_STRONG_QUALITY):
+                    log.info(
+                        "UAR escalation skipped: routing hint quality %.2f "
+                        "(support %d) — staying local",
+                        local_hint[0], local_hint[1],
+                    )
+                else:
+                    log.info(
+                        "UAR escalation: confidence %.2f < threshold %.2f, "
+                        "upgrading local -> claude",
+                        route.confidence, esc_threshold,
+                    )
+                    return RouteDecision(
+                        model="claude",
+                        complexity=route.complexity,
+                        reasoning=f"low confidence ({route.confidence:.0%}) — escalated to Claude",
+                        confidence=route.confidence,
+                        needs_context=route.confidence < CONTEXT_EXPANSION_THRESHOLD,
+                    )
+
+            # Strong negative hint: this task family historically fails
+            # locally — bias toward escalation even at decent confidence.
+            if (route.model == "local" and local_hint is not None
+                    and local_hint[1] >= HINT_MIN_SUPPORT
+                    and local_hint[0] <= HINT_WEAK_QUALITY):
                 log.info(
-                    "UAR escalation: confidence %.2f < threshold %.2f, "
+                    "Routing hint escalation: local quality %.2f (support %d), "
                     "upgrading local -> claude",
-                    route.confidence, esc_threshold,
+                    local_hint[0], local_hint[1],
                 )
                 return RouteDecision(
                     model="claude",
                     complexity=route.complexity,
-                    reasoning=f"low confidence ({route.confidence:.0%}) — escalated to Claude",
+                    reasoning=(
+                        f"negative routing hint (quality {local_hint[0]:.0%}, "
+                        f"support {local_hint[1]}) — escalated to Claude"
+                    ),
                     confidence=route.confidence,
-                    needs_context=route.confidence < CONTEXT_EXPANSION_THRESHOLD,
+                    needs_context=route.needs_context,
                 )
 
             # ── Heuristic safety net (unchanged) ─────────────────────────────
@@ -259,6 +305,28 @@ class TaskRouter:
             return RouteDecision(model="claude", complexity="complex",
                                 reasoning=f"router error: {exc}",
                                 confidence=0.0, needs_context=True)
+
+    def _local_route_hint(self, message: str):
+        """Best (quality, support) consolidated hint for the LOCAL backend.
+
+        Perf Phase 6 hook. Returns None when the
+        ``trajectory_consolidation_enabled`` flag is off (the default), when
+        no local-backend hint matches the message, or on ANY failure —
+        classification must never depend on the hint store being healthy
+        (fail-open). Of the matching hints, the strongest signal (highest
+        support) is returned.
+        """
+        try:
+            if not self._settings.get("trajectory_consolidation_enabled", False):
+                return None
+            from services import trajectory_store
+            table = trajectory_store.hint_table(message, top_k=3, backend="local")
+            if not table:
+                return None
+            return max(table.values(), key=lambda qs: qs[1])
+        except Exception as exc:
+            log.debug("routing hint lookup skipped: %s", exc)
+            return None
 
     def _adaptive_threshold_for(self, complexity: str) -> float:
         """

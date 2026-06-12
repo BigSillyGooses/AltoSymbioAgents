@@ -198,6 +198,32 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             "ON trajectories(embedding_status)"
         )
 
+        # ── Perf Phase 6: consolidated routing hints ──────────────────────────
+        # One row per (task-family exemplar × agent × backend) distilled from
+        # ≥ trajectory_consolidation_min_cluster similar trajectories (or by
+        # merging later trajectories into an existing hint). ``quality`` is the
+        # support-weighted running mean of the members' graded quality scores;
+        # ``exemplar_text`` is the cluster medoid's task text and is what gets
+        # embedded into vec_routing_hints. services/trajectory_store.py owns
+        # all reads/writes (consolidate / hint_table / pruning).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS routing_hints (
+                id            TEXT PRIMARY KEY,
+                exemplar_text TEXT NOT NULL,
+                agent_id      TEXT,
+                backend       TEXT,
+                skill         TEXT,
+                quality       REAL NOT NULL,
+                support_count INTEGER NOT NULL,
+                created_at    TEXT,
+                last_seen     TEXT
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_routing_hints_agent "
+            "ON routing_hints(agent_id, backend)"
+        )
+
         # ── Guidance / Constitution compiler: rule shards ─────────────────────
         # Project/role rules split into discrete shards, embedded so only the
         # rules relevant to the current message are injected into the system
@@ -693,6 +719,12 @@ def _create_schema(conn: sqlite3.Connection) -> None:
                 rule_id TEXT UNIQUE NOT NULL
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vec_routing_hints_map (
+                vec_rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                hint_id TEXT UNIQUE NOT NULL
+            )
+        """)
         try:
             cur.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS vec_documents USING vec0(
@@ -711,6 +743,11 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             """)
             cur.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS vec_guidance USING vec0(
+                    embedding float[384]
+                )
+            """)
+            cur.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS vec_routing_hints USING vec0(
                     embedding float[384]
                 )
             """)
@@ -1174,6 +1211,37 @@ _MIGRATIONS = [
             model_used                   TEXT,
             created_at                   TEXT,
             updated_at                   TEXT
+        )""",
+    ]),
+
+    # ── Perf Phase 6: trajectory learning v2 (graded verdicts + hints) ───────
+    # quality_score is the graded [0,1] verdict written by
+    # trajectory_store.record() and lazily backfilled on read for legacy
+    # rows (NULL = not yet computed). consolidated marks rows already
+    # distilled into routing_hints; their vec_trajectories rows are dropped
+    # (the trajectories row stays for audit). The plain tables are repeated
+    # from _create_schema so existing installs gain them too; the
+    # vec_routing_hints vec0 virtual table is created in _create_schema's
+    # try-block alongside the other vec0 tables.
+    ("perf_phase6.trajectory_v2", [
+        "ALTER TABLE trajectories ADD COLUMN quality_score REAL",
+        "ALTER TABLE trajectories ADD COLUMN consolidated INTEGER DEFAULT 0",
+        """CREATE TABLE IF NOT EXISTS routing_hints (
+            id            TEXT PRIMARY KEY,
+            exemplar_text TEXT NOT NULL,
+            agent_id      TEXT,
+            backend       TEXT,
+            skill         TEXT,
+            quality       REAL NOT NULL,
+            support_count INTEGER NOT NULL,
+            created_at    TEXT,
+            last_seen     TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_routing_hints_agent "
+        "ON routing_hints(agent_id, backend)",
+        """CREATE TABLE IF NOT EXISTS vec_routing_hints_map (
+            vec_rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            hint_id TEXT UNIQUE NOT NULL
         )""",
     ]),
 ]

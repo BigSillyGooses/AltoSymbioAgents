@@ -722,6 +722,7 @@ def run_indexer_cycle() -> int:
     m = _index_dirty_memories()
     t = 0
     g = 0
+    c = 0
     # Catch-up embedding for ReasoningBank-lite trajectories and Guidance
     # rule shards. Imported lazily to avoid a circular import at module load
     # (both modules import semantic_search).
@@ -735,7 +736,16 @@ def run_indexer_cycle() -> int:
         g = guidance.index_pending()
     except Exception:
         pass
-    return d + m + t + g
+    # Perf Phase 6: distil raw trajectories into routing hints on the same
+    # background cadence. Flag-gated (default off → byte-identical cycle)
+    # and best-effort like the other hooks.
+    try:
+        if _setting("trajectory_consolidation_enabled", False):
+            from services import trajectory_store
+            c = trajectory_store.consolidate()
+    except Exception:
+        pass
+    return d + m + t + g + c
 
 
 def start_background_indexer(interval_seconds: int = 60) -> threading.Thread:

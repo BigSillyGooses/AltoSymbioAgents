@@ -1,5 +1,5 @@
 {
-  "duration_seconds": 40.09,
+  "duration_seconds": 39.422,
   "scenarios": {
     "chat_long": {
       "billed_reduction_pct_both": 58.32,
@@ -893,7 +893,7 @@
       },
       "scenario": "chat_long",
       "spans": {},
-      "wall_clock_ms": 863.851
+      "wall_clock_ms": 856.148
     },
     "chat_short": {
       "cache_hit_rate": 0.896041,
@@ -902,14 +902,14 @@
       "scenario": "chat_short",
       "spans": {
         "model_call": {
-          "avg_ms": 0.153,
+          "avg_ms": 0.144,
           "count": 5,
-          "total_ms": 0.766
+          "total_ms": 0.721
         },
         "retrieval_total": {
-          "avg_ms": 0.048,
+          "avg_ms": 0.043,
           "count": 5,
-          "total_ms": 0.24
+          "total_ms": 0.217
         }
       },
       "tokens_in_per_turn": 224.8,
@@ -984,7 +984,7 @@
           "turn": 5
         }
       ],
-      "wall_clock_ms": 239.063
+      "wall_clock_ms": 228.698
     },
     "rag_heavy": {
       "chunks_ingested": 2000,
@@ -997,63 +997,78 @@
       "scenario": "rag_heavy",
       "spans": {
         "bm25": {
-          "avg_ms": 2.144,
+          "avg_ms": 1.681,
           "count": 50,
-          "total_ms": 107.205
+          "total_ms": 84.075
         },
         "embed": {
-          "avg_ms": 0.071,
+          "avg_ms": 0.067,
           "count": 2050,
-          "total_ms": 146.219
+          "total_ms": 137.544
         },
         "index_total": {
-          "avg_ms": 20159.063,
+          "avg_ms": 19703.958,
           "count": 1,
-          "total_ms": 20159.063
+          "total_ms": 19703.958
         },
         "ingest_total": {
-          "avg_ms": 11277.081,
+          "avg_ms": 10821.766,
           "count": 1,
-          "total_ms": 11277.081
+          "total_ms": 10821.766
         },
         "rrf": {
-          "avg_ms": 0.019,
+          "avg_ms": 0.017,
           "count": 50,
-          "total_ms": 0.93
+          "total_ms": 0.829
         },
         "vec_search": {
-          "avg_ms": 2.0,
+          "avg_ms": 1.955,
           "count": 50,
-          "total_ms": 99.989
+          "total_ms": 97.768
         }
       },
-      "wall_clock_ms": 31649.263
+      "wall_clock_ms": 30713.168
     },
     "routing": {
       "agents_biased": 300,
       "bias_tables_nonempty": 100,
       "decision_count": 100,
+      "hint_tables_nonempty": 100,
+      "hints_created": 36,
+      "raw_pick_disagreements": 78,
+      "regret_hints_le_raw": 1,
+      "regret_raw_le_none": 1,
+      "routing_regret_hints": 0.0,
+      "routing_regret_none": 0.75,
+      "routing_regret_raw": 0.03,
       "scenario": "routing",
       "similar_hits": 300,
       "spans": {
         "embed": {
-          "avg_ms": 0.044,
-          "count": 400,
-          "total_ms": 17.537
+          "avg_ms": 0.048,
+          "count": 708,
+          "total_ms": 34.316
         },
         "traj_bias_table": {
-          "avg_ms": 1.097,
+          "avg_ms": 1.112,
           "count": 100,
-          "total_ms": 109.689
+          "total_ms": 111.156
         },
         "traj_find_similar": {
-          "avg_ms": 0.568,
+          "avg_ms": 0.555,
           "count": 100,
-          "total_ms": 56.777
+          "total_ms": 55.525
+        },
+        "traj_hint_table": {
+          "avg_ms": 0.645,
+          "count": 100,
+          "total_ms": 64.453
         }
       },
+      "trajectories_consolidated": 200,
       "trajectories_seeded": 200,
-      "wall_clock_ms": 657.871
+      "vec_rows_remaining": 0,
+      "wall_clock_ms": 947.047
     },
     "team_pipeline": {
       "parallel": {
@@ -1063,9 +1078,9 @@
         "total_tokens_in": 1255,
         "total_tokens_out": 19357,
         "validation_passed_steps": 6,
-        "wall_clock_ms": 2148.837
+        "wall_clock_ms": 2143.731
       },
-      "parallel_over_sequential_ratio": 0.588965,
+      "parallel_over_sequential_ratio": 0.587357,
       "scenario": "team_pipeline",
       "sequential": {
         "specialist_calls": 6,
@@ -1074,23 +1089,23 @@
         "total_tokens_in": 1255,
         "total_tokens_out": 19357,
         "validation_passed_steps": 6,
-        "wall_clock_ms": 3648.498
+        "wall_clock_ms": 3649.791
       },
       "spans": {
         "model_call": {
-          "avg_ms": 450.884,
+          "avg_ms": 450.83,
           "count": 16,
-          "total_ms": 7214.151
+          "total_ms": 7213.278
         },
         "pipeline_total": {
-          "avg_ms": 2898.645,
+          "avg_ms": 2896.728,
           "count": 2,
-          "total_ms": 5797.29
+          "total_ms": 5793.456
         }
       },
       "tokens_identical": 1,
-      "wall_clock_ms": 5801.105
+      "wall_clock_ms": 5796.961
     }
   },
-  "started_at": 1781281916.461198
+  "started_at": 1781283706.1343071
 }
