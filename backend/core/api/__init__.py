@@ -118,6 +118,7 @@ class API:
                 api_key=self._settings.get("claude_api_key", ""),
                 model=self._settings.get("claude_model"),
                 use_caching=self._settings.get("claude_prompt_caching"),
+                use_history_caching=self._settings.get("claude_history_caching"),
             ),
             required=True,
         )

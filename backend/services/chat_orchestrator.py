@@ -634,6 +634,34 @@ class ChatOrchestrator:
                  sum(len(m.get("content", "")) for m in trimmed), budget_chars)
         return trimmed
 
+    def _compact_or_trim(self, conversation_id: str, messages: list) -> list:
+        """Fit the history into the context budget (Perf Phase 3b).
+
+        Flag off (``history_compaction_enabled``, default) this is exactly the
+        legacy ``_trim_history_to_budget`` call, so flag-off turns stay
+        byte-identical. Flag on, overflowing messages are folded into the
+        conversation's persisted rolling summary instead of being dropped —
+        see services/history_compactor.py. Compaction is best-effort: ANY
+        exception falls back to the legacy trim so a summarizer failure can
+        never break a chat turn.
+        """
+        if self._settings.get("history_compaction_enabled", False):
+            try:
+                from services import history_compactor
+                return history_compactor.compact(
+                    conversation_id=conversation_id,
+                    messages=messages,
+                    budget_chars=MAX_CONTEXT_CHARS,
+                    settings=self._settings,
+                    local_client=self.local,
+                    claude_client=self.claude,
+                )
+            except Exception as exc:  # noqa: BLE001 — fall back, never break a turn
+                log.warning(
+                    "History compaction failed (%s); falling back to trim", exc,
+                )
+        return self._trim_history_to_budget(messages)
+
     # ── PR 8: file attachments ───────────────────────────────────────────────
 
     @staticmethod
@@ -1367,8 +1395,8 @@ class ChatOrchestrator:
             for r in reversed(history_rows)
         ]
 
-        # ── Fix 7: Token-aware trimming ──────────────────────────────────────
-        messages = self._trim_history_to_budget(messages)
+        # ── Fix 7: Token-aware trimming (Phase 3b: compaction when enabled) ──
+        messages = self._compact_or_trim(conversation_id, messages)
 
         # ── PR 8: ephemeral attachment context ───────────────────────────────
         # Attachments dropped onto the chat input live in their own table —
@@ -2177,7 +2205,7 @@ class ChatOrchestrator:
             {"role": r["role"], "content": r["content"]}
             for r in reversed(history_rows)
         ]
-        history = self._trim_history_to_budget(history)
+        history = self._compact_or_trim(conversation_id, history)
 
         # Web research auto-fetch (mirrors the solo path): index any URL the
         # user mentioned before the team runs, so the freshly-added page is

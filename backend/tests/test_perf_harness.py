@@ -125,7 +125,7 @@ def test_fake_cache_usage_splits_total():
     from benchmarks.perf.fake_clients import count_tokens
     client = _client()
     messages = [{"role": "user", "content": "hello there friend"}]
-    full_text, _ = client._render_request(SYSTEM, messages)
+    full_text, _, _ = client._render_request(SYSTEM, messages)
     result = client.chat_unified(SYSTEM, messages)
     total = (result["input_tokens"] + result["cache_creation_tokens"]
              + result["cache_read_tokens"])

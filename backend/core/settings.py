@@ -136,6 +136,22 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     # Caching
     "claude_prompt_caching":       (bool,  True),
 
+    # Perf Phase 3 — extended prompt caching + rolling history compaction.
+    # Both flags default off so flag-off turns stay byte-identical.
+    # claude_history_caching adds a second Anthropic cache breakpoint at the
+    # stable end of the previous turn (services/claude_client.py
+    # _apply_history_cache); history_compaction_* summarize overflowing
+    # history instead of dropping it (services/history_compactor.py).
+    # keep_recent counts MESSAGES, not turns (a turn is two messages);
+    # batch_msgs controls how many newly-overflowed messages accumulate
+    # before the rolling summary is regenerated — batching is what keeps the
+    # cached history prefix byte-stable between regenerations.
+    "claude_history_caching":              (bool, False),
+    "history_compaction_enabled":          (bool, False),
+    "history_compaction_keep_recent_msgs": (int,  8),
+    "history_compaction_batch_msgs":       (int,  6),
+    "history_compaction_max_summary_chars": (int, 2000),
+
     # UI — start tab
     "start_tab":                   (str,   "chat"),
 
@@ -651,6 +667,12 @@ FIELD_METADATA: dict[str, dict] = {
         "type":        "bool",
         "group":       "api",
     },
+    "claude_history_caching": {
+        "label":       "Cache conversation history",
+        "description": "Add a second cache breakpoint at the end of the previous turn so re-sent history bills at the cache-read rate on follow-up turns.",
+        "type":        "bool",
+        "group":       "api",
+    },
 
     # ── Local models ────────────────────────────────────────────────────────
     "local_backend_mode": {
@@ -754,6 +776,39 @@ FIELD_METADATA: dict[str, dict] = {
         "description": "Default instructions prepended to every conversation.",
         "type":        "textarea",
         "group":       "chat",
+    },
+    "history_compaction_enabled": {
+        "label":       "History compaction",
+        "description": "When a conversation outgrows the context budget, summarize the oldest messages instead of dropping them, so early facts survive long chats.",
+        "type":        "bool",
+        "group":       "chat",
+    },
+    "history_compaction_keep_recent_msgs": {
+        "label":       "Recent messages kept verbatim",
+        "description": "How many of the newest messages stay un-summarized when compaction triggers. Counts messages, not turns — one turn is two messages (user + assistant).",
+        "type":        "int",
+        "group":       "chat",
+        "unit":        "messages",
+        "min":         2,
+        "max":         40,
+    },
+    "history_compaction_batch_msgs": {
+        "label":       "Compaction batch size",
+        "description": "Regenerate the rolling summary only after this many additional messages overflow. Batching keeps the cached history prefix stable between regenerations.",
+        "type":        "int",
+        "group":       "chat",
+        "unit":        "messages",
+        "min":         1,
+        "max":         40,
+    },
+    "history_compaction_max_summary_chars": {
+        "label":       "Summary length cap",
+        "description": "Hard ceiling on the rolling summary length; longer model output is truncated.",
+        "type":        "int",
+        "group":       "chat",
+        "unit":        "chars",
+        "min":         200,
+        "max":         20000,
     },
     "default_agent_id": {
         "label":       "Default agent",

@@ -41,6 +41,13 @@ MIN_CACHEABLE_PREFIX_TOKENS = 2048
 # The real API enforces at most 4 cache_control breakpoints per request.
 MAX_CACHE_BREAKPOINTS = 4
 
+# When looking for a hit, the real API checks the content-block boundaries
+# BEFORE each breakpoint (roughly 20 blocks of lookback) for the longest
+# already-cached prefix. This is what makes a per-turn-advancing history
+# breakpoint (Phase 3: the marker moves 2 blocks forward each turn) read the
+# previous turn's written prefix instead of rewriting from byte 0.
+CACHE_HIT_LOOKBACK_BLOCKS = 20
+
 
 def count_tokens(text: str) -> int:
     """Fixture tokenizer: 4 chars ≈ 1 token. Deterministic by construction."""
@@ -89,19 +96,22 @@ class FakeClaudeClient(LLMClient):
             return block.get("text", "")
         return json.dumps(block, sort_keys=True, default=str)
 
-    def _render_request(self, system, messages) -> tuple[str, list[str]]:
+    def _render_request(self, system, messages) -> tuple[str, list[str], list[int]]:
         """Render the request the way the API tokenizes it: system first,
-        then messages in order. Returns ``(full_text, breakpoint_prefixes)``
-        where each breakpoint prefix is the rendered request up to and
-        including a cache_control-marked block.
+        then messages in order. Returns ``(full_text, boundaries,
+        marker_positions)`` where ``boundaries[i]`` is the rendered request up
+        to and including the i-th content block, and ``marker_positions``
+        indexes the boundaries whose block carries a cache_control marker.
         """
         pieces: list[str] = []
-        breakpoints: list[str] = []
+        boundaries: list[str] = []
+        marker_positions: list[int] = []
 
         def add(text: str, marked: bool) -> None:
             pieces.append(text)
+            boundaries.append("".join(pieces))
             if marked:
-                breakpoints.append("".join(pieces))
+                marker_positions.append(len(boundaries) - 1)
 
         # System: mirror ClaudeClient._build_system_with_cache — a non-empty
         # plain-string system gets one ephemeral cache_control block when
@@ -127,11 +137,12 @@ class FakeClaudeClient(LLMClient):
                         role + "\x00" + self._render_block(block) + "\x00",
                         marked=isinstance(block, dict) and bool(block.get("cache_control")),
                     )
-        return "".join(pieces), breakpoints
+        return "".join(pieces), boundaries, marker_positions
 
     # ── Prefix-cache simulation ──────────────────────────────────────────
 
-    def _simulate_cache(self, full_text: str, breakpoints: list[str]) -> tuple[int, int, int]:
+    def _simulate_cache(self, full_text: str, boundaries: list[str],
+                        marker_positions: list[int]) -> tuple[int, int, int]:
         """Apply Anthropic's prompt-caching rules to one rendered request.
 
         Returns ``(input_tokens, cache_creation_tokens, cache_read_tokens)``
@@ -142,40 +153,53 @@ class FakeClaudeClient(LLMClient):
         1. At most MAX_CACHE_BREAKPOINTS (4) cache_control markers count per
            request; markers beyond the 4th are ignored.
         2. Matching is a strict byte-prefix match: the cache key is a hash of
-           the EXACT rendered request up to and including the marked block.
+           the EXACT rendered request up to and including a content block.
            Changing any earlier byte produces a different hash → cache miss
-           for that breakpoint and everything after it.
+           for that prefix and everything after it.
         3. Minimum cacheable prefix: a marker whose prefix is shorter than
            ``min_cacheable_prefix_tokens`` (2048 fixture tokens ≈ the
            claude-sonnet-4-6 floor) is SILENTLY ignored — it reports neither
            creation nor read, and its tokens bill as plain input.
-        4. Billing split: the longest already-cached valid prefix bills as
-           ``cache_read_tokens``; tokens between that hit and the longest
-           valid marker bill as ``cache_creation_tokens`` (the API writes the
-           cache at every valid breakpoint); everything after the last valid
-           marker bills as ordinary ``input_tokens``.
+        4. Lookback: a hit does not require the marker's OWN prefix to be
+           cached — the API checks the content-block boundaries up to
+           CACHE_HIT_LOOKBACK_BLOCKS (20) before each breakpoint and reads
+           the longest already-cached one. This is why a history breakpoint
+           that advances 2 blocks per turn still reads the previous turn's
+           prefix back instead of paying a full write every turn.
+        5. Billing split: the longest cached boundary found in rule 4 bills
+           as ``cache_read_tokens``; tokens between that hit and the longest
+           valid marker bill as ``cache_creation_tokens`` (the cache is
+           written at every valid breakpoint); everything after the last
+           valid marker bills as ordinary ``input_tokens``.
         """
         total = count_tokens(full_text)
 
-        valid = [
-            p for p in breakpoints[:MAX_CACHE_BREAKPOINTS]            # rule 1
-            if count_tokens(p) >= self._min_prefix_tokens             # rule 3
+        valid_positions = [
+            pos for pos in marker_positions[:MAX_CACHE_BREAKPOINTS]   # rule 1
+            if count_tokens(boundaries[pos]) >= self._min_prefix_tokens  # rule 3
         ]
-        if not valid:
+        if not valid_positions:
             return total, 0, 0
 
+        candidates: set[int] = set()                                  # rule 4
+        for pos in valid_positions:
+            candidates.update(
+                range(max(0, pos - CACHE_HIT_LOOKBACK_BLOCKS), pos + 1)
+            )
         read = 0
-        for prefix in sorted(valid, key=len, reverse=True):           # rule 4
-            digest = hashlib.sha256(prefix.encode("utf-8")).hexdigest()  # rule 2
+        for pos in sorted(candidates, reverse=True):  # longest prefix first
+            digest = hashlib.sha256(                                  # rule 2
+                boundaries[pos].encode("utf-8")
+            ).hexdigest()
             if digest in self._cached_prefix_hashes:
-                read = count_tokens(prefix)
+                read = count_tokens(boundaries[pos])
                 break
 
-        longest = max(count_tokens(p) for p in valid)
-        creation = max(0, longest - read)
-        for prefix in valid:  # writes happen at every valid breakpoint
+        longest = max(count_tokens(boundaries[p]) for p in valid_positions)
+        creation = max(0, longest - read)                             # rule 5
+        for pos in valid_positions:  # writes happen at every valid breakpoint
             self._cached_prefix_hashes.add(
-                hashlib.sha256(prefix.encode("utf-8")).hexdigest()
+                hashlib.sha256(boundaries[pos].encode("utf-8")).hexdigest()
             )
         return total - longest, creation, read
 
@@ -187,8 +211,10 @@ class FakeClaudeClient(LLMClient):
         return text
 
     def _respond(self, system, messages) -> dict:
-        full_text, breakpoints = self._render_request(system, messages)
-        input_tokens, creation, read = self._simulate_cache(full_text, breakpoints)
+        full_text, boundaries, marker_positions = self._render_request(system, messages)
+        input_tokens, creation, read = self._simulate_cache(
+            full_text, boundaries, marker_positions,
+        )
         text = self._next_reply()
         result = {
             "text": text,

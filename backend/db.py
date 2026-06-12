@@ -487,6 +487,26 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             "ON embedding_cache(last_used)"
         )
 
+        # ── Perf Phase 3: rolling history compaction ──────────────────────────
+        # One live row per conversation: the rolling summary of every message
+        # BEFORE covers_through_message_count (a count over the conversation's
+        # user/assistant rows in ``messages`` — messages carry no stable index
+        # at the trim site, so count anchoring is the identity scheme).
+        # services/history_compactor.py owns reads, batched regeneration, and
+        # the single-row replace; the row is intentionally NOT a history of
+        # summaries — replacing in place keeps lookups O(1).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_summaries (
+                conversation_id              TEXT PRIMARY KEY,
+                covers_through_message_count INTEGER NOT NULL,
+                source_message_count         INTEGER,
+                summary_text                 TEXT NOT NULL,
+                model_used                   TEXT,
+                created_at                   TEXT,
+                updated_at                   TEXT
+            )
+        """)
+
         # ── Priority 3: Handoff log ───────────────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS handoff_log (
@@ -1140,6 +1160,21 @@ _MIGRATIONS = [
         )""",
         "CREATE INDEX IF NOT EXISTS idx_embedding_cache_last_used "
         "ON embedding_cache(last_used)",
+    ]),
+
+    # ── Perf Phase 3: rolling history compaction summaries ───────────────────
+    # Also created by CREATE TABLE IF NOT EXISTS in _create_schema (new
+    # installs); repeated here so existing installs gain the table too.
+    ("perf_phase3.conversation_summaries", [
+        """CREATE TABLE IF NOT EXISTS conversation_summaries (
+            conversation_id              TEXT PRIMARY KEY,
+            covers_through_message_count INTEGER NOT NULL,
+            source_message_count         INTEGER,
+            summary_text                 TEXT NOT NULL,
+            model_used                   TEXT,
+            created_at                   TEXT,
+            updated_at                   TEXT
+        )""",
     ]),
 ]
 

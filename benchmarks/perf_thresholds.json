@@ -8,6 +8,18 @@
       "cost_per_turn_usd": { "max": 0.005 },
       "turn_count": { "min": 5, "max": 5 }
     },
+    "chat_long": {
+      "_comment": "Phase 3 headline. The billed-input ceiling for the both-flags config is precomputed as 65% of the measured flags-off run (58262.30 billed tokens -> ceiling 37870), i.e. the gate fails unless both-on stays at least 35% cheaper than off. Measured at gate-setting time: both = 24283.50 (58.3% reduction). summary_regenerations asserts batched (not per-turn) summary refresh — 7 regenerations across ~18 over-budget turns at gate-setting time.",
+      "configs.off.turn_count": { "min": 30, "max": 30 },
+      "configs.caching.turn_count": { "min": 30, "max": 30 },
+      "configs.compaction.turn_count": { "min": 30, "max": 30 },
+      "configs.both.turn_count": { "min": 30, "max": 30 },
+      "configs.both.billed_input_tokens": { "max": 37870 },
+      "billed_reduction_pct_both": { "min": 35 },
+      "configs.both.cache_hit_rate": { "min": 0.8 },
+      "configs.both.summary_regenerations": { "min": 1, "max": 10 },
+      "configs.off.summary_regenerations": { "min": 0, "max": 0 }
+    },
     "rag_heavy": {
       "queries_with_results": { "min": 50 },
       "results_per_query": { "min": 5.0 },
