@@ -632,9 +632,8 @@ def search_documents(
             SELECT v.rowid, v.distance, m.doc_id
             FROM vec_documents v
             INNER JOIN vec_documents_map m ON m.vec_rowid = v.rowid
-            WHERE v.embedding MATCH ?
+            WHERE v.embedding MATCH ? AND k = ?
             ORDER BY v.distance
-            LIMIT ?
             """,
             (query_blob, top_k * 2),
         )
@@ -693,9 +692,8 @@ def search_memories(
             SELECT v.rowid, v.distance, m.memory_id
             FROM vec_memories v
             INNER JOIN vec_memories_map m ON m.vec_rowid = v.rowid
-            WHERE v.embedding MATCH ?
+            WHERE v.embedding MATCH ? AND k = ?
             ORDER BY v.distance
-            LIMIT ?
             """,
             (query_blob, top_k),
         )

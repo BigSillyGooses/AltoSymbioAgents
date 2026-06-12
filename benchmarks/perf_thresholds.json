@@ -1,0 +1,39 @@
+{
+  "_comment": "Gates for benchmarks/perf/run_perf.py. Two classes: 'deterministic' metrics are identical on every run by construction (fixture tokenizer, scripted replies, seeded fixtures) so the ceilings are tight; 'latency' metrics vary with the host, so the ceilings are generous absolute ms bounds meant to catch order-of-magnitude regressions, not noise. Baseline snapshot: benchmarks/perf_baseline.json.",
+  "deterministic": {
+    "chat_short": {
+      "tokens_in_per_turn": { "max": 250 },
+      "tokens_out_per_turn": { "max": 90 },
+      "cache_hit_rate": { "min": 0.85 },
+      "cost_per_turn_usd": { "max": 0.005 },
+      "turn_count": { "min": 5, "max": 5 }
+    },
+    "rag_heavy": {
+      "queries_with_results": { "min": 50 },
+      "results_per_query": { "min": 5.0 },
+      "fused_from_both": { "min": 250 },
+      "chunks_ingested": { "min": 2000, "max": 2000 }
+    },
+    "routing": {
+      "decision_count": { "min": 100, "max": 100 },
+      "similar_hits": { "min": 300 },
+      "bias_tables_nonempty": { "min": 100 }
+    }
+  },
+  "latency": {
+    "chat_short": {
+      "spans.retrieval_total.avg_ms": { "max": 50 },
+      "spans.model_call.avg_ms": { "max": 50 }
+    },
+    "rag_heavy": {
+      "spans.vec_search.avg_ms": { "max": 100 },
+      "spans.bm25.avg_ms": { "max": 100 },
+      "spans.embed.avg_ms": { "max": 25 },
+      "spans.rrf.avg_ms": { "max": 10 }
+    },
+    "routing": {
+      "spans.traj_find_similar.avg_ms": { "max": 50 },
+      "spans.traj_bias_table.avg_ms": { "max": 50 }
+    }
+  }
+}

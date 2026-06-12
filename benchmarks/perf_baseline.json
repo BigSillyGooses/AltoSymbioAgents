@@ -1,0 +1,155 @@
+{
+  "duration_seconds": 42.098,
+  "scenarios": {
+    "chat_short": {
+      "cache_hit_rate": 0.896041,
+      "cost_per_turn_usd": 0.00426,
+      "scenario": "chat_short",
+      "spans": {
+        "model_call": {
+          "avg_ms": 0.215,
+          "count": 5,
+          "total_ms": 1.074
+        },
+        "retrieval_total": {
+          "avg_ms": 0.057,
+          "count": 5,
+          "total_ms": 0.285
+        }
+      },
+      "tokens_in_per_turn": 224.8,
+      "tokens_out_per_turn": 79.2,
+      "totals": {
+        "cache_creation_tokens": 2422,
+        "cache_read_tokens": 9688,
+        "cost_usd": 0.0213009,
+        "tokens_in": 1124,
+        "tokens_out": 396
+      },
+      "turn_count": 5,
+      "turns": [
+        {
+          "cache_creation_tokens": 2422,
+          "cache_read_tokens": 0,
+          "cost_usd": 0.0105525,
+          "model": "claude-sonnet-4-6",
+          "route_reason": "perf-fixture route",
+          "tokens_in": 20,
+          "tokens_out": 94,
+          "turn": 1
+        },
+        {
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 2422,
+          "cost_usd": 0.0022206,
+          "model": "claude-sonnet-4-6",
+          "route_reason": "perf-fixture route",
+          "tokens_in": 133,
+          "tokens_out": 73,
+          "turn": 2
+        },
+        {
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 2422,
+          "cost_usd": 0.0026166,
+          "model": "claude-sonnet-4-6",
+          "route_reason": "perf-fixture route",
+          "tokens_in": 225,
+          "tokens_out": 81,
+          "turn": 3
+        },
+        {
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 2422,
+          "cost_usd": 0.0028296,
+          "model": "claude-sonnet-4-6",
+          "route_reason": "perf-fixture route",
+          "tokens_in": 326,
+          "tokens_out": 75,
+          "turn": 4
+        },
+        {
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 2422,
+          "cost_usd": 0.0030816,
+          "model": "claude-sonnet-4-6",
+          "route_reason": "perf-fixture route",
+          "tokens_in": 420,
+          "tokens_out": 73,
+          "turn": 5
+        }
+      ],
+      "wall_clock_ms": 307.622
+    },
+    "rag_heavy": {
+      "chunks_ingested": 2000,
+      "documents_indexed": 2000,
+      "fused_from_both": 250,
+      "queries_with_results": 50,
+      "query_count": 50,
+      "results_per_query": 5.0,
+      "results_returned": 250,
+      "scenario": "rag_heavy",
+      "spans": {
+        "bm25": {
+          "avg_ms": 2.851,
+          "count": 50,
+          "total_ms": 142.54
+        },
+        "embed": {
+          "avg_ms": 0.093,
+          "count": 2050,
+          "total_ms": 190.382
+        },
+        "index_total": {
+          "avg_ms": 26086.584,
+          "count": 1,
+          "total_ms": 26086.584
+        },
+        "ingest_total": {
+          "avg_ms": 13941.847,
+          "count": 1,
+          "total_ms": 13941.847
+        },
+        "rrf": {
+          "avg_ms": 0.021,
+          "count": 50,
+          "total_ms": 1.062
+        },
+        "vec_search": {
+          "avg_ms": 2.452,
+          "count": 50,
+          "total_ms": 122.582
+        }
+      },
+      "wall_clock_ms": 40301.155
+    },
+    "routing": {
+      "agents_biased": 300,
+      "bias_tables_nonempty": 100,
+      "decision_count": 100,
+      "scenario": "routing",
+      "similar_hits": 300,
+      "spans": {
+        "embed": {
+          "avg_ms": 0.055,
+          "count": 400,
+          "total_ms": 22.07
+        },
+        "traj_bias_table": {
+          "avg_ms": 1.294,
+          "count": 100,
+          "total_ms": 129.444
+        },
+        "traj_find_similar": {
+          "avg_ms": 0.685,
+          "count": 100,
+          "total_ms": 68.544
+        }
+      },
+      "trajectories_seeded": 200,
+      "wall_clock_ms": 852.851
+    }
+  },
+  "started_at": 1781236901.9539807
+}
