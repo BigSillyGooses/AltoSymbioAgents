@@ -34,9 +34,23 @@ class _RagAssembler:
     this module doesn't need to know about the buffer store.
     """
 
-    def __init__(self, rag_index, semantic_search_mod):
+    def __init__(self, rag_index, semantic_search_mod, settings=None):
         self._rag = rag_index
         self._semantic = semantic_search_mod
+        # Optional Settings handle (anything with .get). None — direct
+        # constructions in older tests — means every knob reads as its
+        # legacy default below, keeping retrieval byte-identical.
+        self._settings = settings
+
+    def _setting(self, key: str, default):
+        """Best-effort settings read; missing/broken settings → default."""
+        if self._settings is None:
+            return default
+        try:
+            value = self._settings.get(key, default)
+            return default if value is None else value
+        except Exception:
+            return default
 
     def get_context(
         self,
@@ -84,8 +98,16 @@ class _RagAssembler:
             except Exception as exc:
                 log.debug("session_facts last_accessed update failed: %s", exc)
 
+        # Perf Phase 2: both knobs were hardcoded (top_k=3,
+        # SIMILARITY_THRESHOLD=0.5). The settings defaults equal those
+        # values, so an untouched install retrieves identically.
+        top_k = int(self._setting("rag_top_k", 3) or 3)
+        threshold = float(
+            self._setting("memory_similarity_threshold", SIMILARITY_THRESHOLD)
+        )
+
         try:
-            rag_results = self._rag.search(user_message, top_k=3)
+            rag_results = self._rag.search(user_message, top_k=top_k)
             ctx.rag_chunks = [
                 r[0] if isinstance(r, (list, tuple)) else r
                 for r in rag_results
@@ -94,10 +116,10 @@ class _RagAssembler:
             pass
 
         try:
-            mem_results = self._semantic.search_memories(user_message, top_k=3)
+            mem_results = self._semantic.search_memories(user_message, top_k=top_k)
             ctx.memories = [
                 m["content"] for m in mem_results
-                if m.get("score", 0) >= SIMILARITY_THRESHOLD
+                if m.get("score", 0) >= threshold
             ]
         except Exception:
             pass

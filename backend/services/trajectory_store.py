@@ -60,7 +60,9 @@ def _embed_trajectory(trajectory_id: str, task_text: str) -> bool:
     if not text:
         return False
     try:
-        vec_blob = semantic_search._serialize(semantic_search._embed([text])[0])
+        # _embed_cached routes through the embedding cache when the
+        # embedding_cache_enabled flag is on; otherwise it is _embed.
+        vec_blob = semantic_search._serialize(semantic_search._embed_cached([text])[0])
         existing = db.fetchone(
             "SELECT vec_rowid FROM vec_trajectories_map WHERE trajectory_id = ?",
             (trajectory_id,),
@@ -181,7 +183,7 @@ def find_similar(
     if not text or not semantic_search.is_available():
         return []
     try:
-        query_blob = semantic_search._serialize(semantic_search._embed([text])[0])
+        query_blob = semantic_search._serialize(semantic_search._embed_cached([text])[0])
         # Over-fetch so post-filtering by agent/threshold still yields top_k.
         vec_rows = db.fetchall(
             """

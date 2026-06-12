@@ -144,6 +144,25 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     "rag_chunk_size":              (int,   800),
     "rag_chunk_overlap":           (int,   200),
 
+    # Perf Phase 2 — retrieval upgrades. All defaults preserve the legacy
+    # behavior exactly (cache/MMR off, top_k 3, no post-RRF cutoff) so a
+    # fresh upgrade is byte-identical until the user opts in.
+    # embedding_cache_*: two-tier (memory LRU + SQLite) content-hash cache
+    # in front of the embedder — see services/embedding_cache.py.
+    "embedding_cache_enabled":     (bool,  False),
+    "embedding_cache_max_rows":    (int,   50_000),
+    "embedding_cache_memory_items": (int,  512),
+    # rag_top_k: chunks/memories retrieved per turn (was hardcoded 3).
+    "rag_top_k":                   (int,   3),
+    # MMR diversity re-rank over the RRF-fused hybrid results: greedy
+    # λ·relevance − (1−λ)·max-similarity-to-selected. λ=1 is pure
+    # relevance (≈ no re-rank); lower λ trades relevance for diversity.
+    "rag_mmr_enabled":             (bool,  False),
+    "rag_mmr_lambda":              (float, 0.7),
+    # Optional post-RRF score cutoff (0.0 = off). RRF scores live in
+    # (0, ~0.033] with k=60, so useful cutoffs are small.
+    "rag_rrf_min_score":           (float, 0.0),
+
     # Memory
     "memory_similarity_threshold": (float, 0.5),
     "memory_history_cap":          (int,   40),
@@ -882,6 +901,60 @@ FIELD_METADATA: dict[str, dict] = {
         "unit":        "chars",
         "min":         0,
         "max":         1000,
+    },
+    "rag_top_k": {
+        "label":       "Chunks per turn",
+        "description": "How many knowledge chunks (and memories) are retrieved for each message.",
+        "type":        "int",
+        "group":       "rag",
+        "min":         1,
+        "max":         20,
+    },
+    "embedding_cache_enabled": {
+        "label":       "Embedding cache",
+        "description": "Reuse embeddings for text the app has already embedded, skipping the embedding model on repeats.",
+        "type":        "bool",
+        "group":       "rag",
+    },
+    "embedding_cache_max_rows": {
+        "label":       "Embedding cache size",
+        "description": "Maximum cached embeddings kept on disk; the least recently used are pruned beyond this.",
+        "type":        "int",
+        "group":       "rag",
+        "unit":        "entries",
+        "min":         100,
+        "max":         1000000,
+    },
+    "embedding_cache_memory_items": {
+        "label":       "Embedding cache (in memory)",
+        "description": "Embeddings held in RAM for instant reuse before falling back to the on-disk cache.",
+        "type":        "int",
+        "group":       "rag",
+        "unit":        "entries",
+        "min":         1,
+        "max":         100000,
+    },
+    "rag_mmr_enabled": {
+        "label":       "Diverse retrieval (MMR)",
+        "description": "Re-rank search results to avoid near-duplicate chunks crowding out distinct information.",
+        "type":        "bool",
+        "group":       "rag",
+    },
+    "rag_mmr_lambda": {
+        "label":       "MMR relevance weight",
+        "description": "Balance between relevance (1.0) and diversity (0.0) when diverse retrieval is on.",
+        "type":        "float",
+        "group":       "rag",
+        "min":         0.0,
+        "max":         1.0,
+    },
+    "rag_rrf_min_score": {
+        "label":       "Minimum fused score",
+        "description": "Drop hybrid-search results whose fused score falls below this (0 = keep all).",
+        "type":        "float",
+        "group":       "rag",
+        "min":         0.0,
+        "max":         0.05,
     },
 
     # ── Web research ──────────────────────────────────────────────────────────

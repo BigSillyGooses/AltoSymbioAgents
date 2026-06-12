@@ -466,6 +466,27 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_bm25_updated ON bm25_corpus(updated_at)"
         )
 
+        # ── Perf Phase 2: embedding cache ─────────────────────────────────────
+        # Content-hash keyed vectors so repeated queries/chunks skip the real
+        # embedder (services/embedding_cache.py). ``vector`` is a packed
+        # float32 BLOB (array('f') — same layout as the vec0 tables but
+        # symmetric, so it can be read back). Pruned oldest-first by
+        # last_used beyond the embedding_cache_max_rows setting.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS embedding_cache (
+                content_hash TEXT PRIMARY KEY,
+                model        TEXT NOT NULL,
+                vector       BLOB NOT NULL,
+                dim          INTEGER NOT NULL,
+                created_at   TEXT,
+                last_used    TEXT
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_embedding_cache_last_used "
+            "ON embedding_cache(last_used)"
+        )
+
         # ── Priority 3: Handoff log ───────────────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS handoff_log (
@@ -1102,6 +1123,23 @@ _MIGRATIONS = [
         "ALTER TABLE token_usage ADD COLUMN cache_read_tokens INTEGER DEFAULT 0",
         "ALTER TABLE token_usage ADD COLUMN cache_creation_tokens INTEGER DEFAULT 0",
         "ALTER TABLE token_usage ADD COLUMN predicted_cost_usd REAL",
+    ]),
+
+    # ── Perf Phase 2: embedding cache table ───────────────────────────────────
+    # Also created by CREATE TABLE IF NOT EXISTS in _create_schema (new
+    # installs); the idempotent statements are repeated here so existing
+    # installs that skip schema creation still gain the table.
+    ("perf_phase2.embedding_cache", [
+        """CREATE TABLE IF NOT EXISTS embedding_cache (
+            content_hash TEXT PRIMARY KEY,
+            model        TEXT NOT NULL,
+            vector       BLOB NOT NULL,
+            dim          INTEGER NOT NULL,
+            created_at   TEXT,
+            last_used    TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_embedding_cache_last_used "
+        "ON embedding_cache(last_used)",
     ]),
 ]
 

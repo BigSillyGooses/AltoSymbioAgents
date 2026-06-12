@@ -169,6 +169,14 @@ class API:
             return has_key
         self._safe_init("firewall", _firewall_init)
 
+        # Perf Phase 2: let the retrieval layer read its feature flags
+        # (embedding cache, MMR re-rank, post-RRF cutoff) from the live
+        # Settings store so UI toggles take effect without a restart.
+        self._safe_init(
+            "retrieval_settings",
+            lambda: semantic_search.attach_settings(self._settings),
+        )
+
         self._memory = self._safe_init(
             "memory_manager",
             lambda: MemoryManager(

@@ -114,7 +114,7 @@ class MemoryManager:
         # directly. Re-bind the underlying dict here so existing
         # ``mem._buffers[conv_id]`` reads/writes still work.
         self._buffers = self._buffer._buffers
-        self._rag_assembler = _RagAssembler(rag_index, semantic_search_mod)
+        self._rag_assembler = _RagAssembler(rag_index, semantic_search_mod, settings)
         self._fact_extractor = _FactExtractor(local_client, self.write_gate)
         self._histories: dict[str, SessionHistory] = {}
 
