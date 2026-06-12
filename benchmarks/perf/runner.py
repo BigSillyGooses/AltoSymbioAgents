@@ -135,9 +135,11 @@ def run_all() -> dict:
 
 # Latency-class fields excluded from the determinism contract: the spans
 # snapshot (its *_ms values vary run to run; its counts do not, but the dict
-# is dropped wholesale for simplicity) and anything ending in ``_ms``.
+# is dropped wholesale for simplicity), anything ending in ``_ms``, and
+# ``_ratio`` fields derived from wall clocks (team_pipeline's
+# parallel_over_sequential_ratio).
 _LATENCY_KEY = "spans"
-_LATENCY_SUFFIX = "_ms"
+_LATENCY_SUFFIXES = ("_ms", "_ratio")
 
 
 def deterministic_view(metrics: dict) -> dict:
@@ -151,7 +153,7 @@ def deterministic_view(metrics: dict) -> dict:
         if isinstance(node, dict):
             return {
                 k: _strip(v) for k, v in node.items()
-                if k != _LATENCY_KEY and not k.endswith(_LATENCY_SUFFIX)
+                if k != _LATENCY_KEY and not k.endswith(_LATENCY_SUFFIXES)
             }
         if isinstance(node, list):
             return [_strip(v) for v in node]

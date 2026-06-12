@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from typing import Callable
 
@@ -63,9 +64,26 @@ class FakeClaudeClient(LLMClient):
         model: str = "claude-sonnet-4-6",
         use_caching: bool = True,
         min_cacheable_prefix_tokens: int = MIN_CACHEABLE_PREFIX_TOKENS,
+        simulated_latency_ms: float = 0.0,
+        keyed_replies: dict[str, str] | None = None,
     ):
         self._replies = list(replies) or ["ok"]
         self._reply_idx = 0
+        # Perf Phase 5 (additive): simulated wall-clock latency per call —
+        # same knob FakeLocalClient has — so parallel-vs-sequential pipeline
+        # scenarios can measure real speedups without a network.
+        self.simulated_latency_ms = float(simulated_latency_ms)
+        # Perf Phase 5 (additive): content-keyed replies. When a key
+        # substring appears in the rendered request, its reply is returned
+        # instead of the next cycled one (first matching key in insertion
+        # order wins). This keeps parallel-pipeline scenarios deterministic:
+        # concurrent steps reach the client in nondeterministic order, so
+        # positional cycling would shuffle the reply↔step assignment from
+        # run to run. Empty/None → pure cycling, exactly as before.
+        self._keyed_replies = dict(keyed_replies or {})
+        # Reply cursor + call log are shared mutable state; the parallel
+        # pipeline calls _respond from several threads at once.
+        self._respond_lock = threading.Lock()
         # ``_model`` mirrors the real ClaudeClient attribute — the
         # orchestrator's _resolve_target / hub_router.target_for read it.
         self._model = model
@@ -210,20 +228,32 @@ class FakeClaudeClient(LLMClient):
         self._reply_idx += 1
         return text
 
+    def _keyed_reply(self, rendered_request: str) -> str | None:
+        """First keyed reply whose key appears in the rendered request."""
+        for key, reply in self._keyed_replies.items():
+            if key in rendered_request:
+                return reply
+        return None
+
     def _respond(self, system, messages) -> dict:
+        if self.simulated_latency_ms > 0:
+            time.sleep(self.simulated_latency_ms / 1000.0)
         full_text, boundaries, marker_positions = self._render_request(system, messages)
-        input_tokens, creation, read = self._simulate_cache(
-            full_text, boundaries, marker_positions,
-        )
-        text = self._next_reply()
-        result = {
-            "text": text,
-            "input_tokens": input_tokens,
-            "output_tokens": count_tokens(text),
-            "cache_creation_tokens": creation,
-            "cache_read_tokens": read,
-        }
-        self.calls.append(dict(result))
+        with self._respond_lock:
+            input_tokens, creation, read = self._simulate_cache(
+                full_text, boundaries, marker_positions,
+            )
+            text = self._keyed_reply(full_text)
+            if text is None:
+                text = self._next_reply()
+            result = {
+                "text": text,
+                "input_tokens": input_tokens,
+                "output_tokens": count_tokens(text),
+                "cache_creation_tokens": creation,
+                "cache_read_tokens": read,
+            }
+            self.calls.append(dict(result))
         return result
 
     # ── LLMClient interface ──────────────────────────────────────────────

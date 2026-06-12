@@ -28,6 +28,16 @@
       "fused_from_both": { "min": 250 },
       "chunks_ingested": { "min": 2000, "max": 2000 }
     },
+    "team_pipeline": {
+      "_comment": "Phase 5. tokens_identical (1/0) asserts parallelism does not change spend — sequential and parallel runs of the same 6-step fixture must bill the same tokens (the fixture makes per-step prompts byte-identical across modes; see run_team_pipeline's docstring). Step counts are exact: the plan has 6 subtasks and every step must validate in both modes. The wall-clock ratio gate lives in the latency class.",
+      "tokens_identical": { "min": 1 },
+      "sequential.steps": { "min": 6, "max": 6 },
+      "parallel.steps": { "min": 6, "max": 6 },
+      "sequential.validation_passed_steps": { "min": 6, "max": 6 },
+      "parallel.validation_passed_steps": { "min": 6, "max": 6 },
+      "sequential.specialist_calls": { "min": 6, "max": 6 },
+      "parallel.specialist_calls": { "min": 6, "max": 6 }
+    },
     "routing": {
       "decision_count": { "min": 100, "max": 100 },
       "similar_hits": { "min": 300 },
@@ -48,6 +58,10 @@
     "routing": {
       "spans.traj_find_similar.avg_ms": { "max": 50 },
       "spans.traj_bias_table.avg_ms": { "max": 50 }
+    },
+    "team_pipeline": {
+      "_comment": "Phase 5 headline. With 4 independent steps at concurrency 3 plus a 2-step dependent chain (simulated 500 ms claude calls, 300 ms local decomposition/synthesis) the ideal ratio is ~0.58; the 0.7 ceiling absorbs scheduler/runner overhead while still failing if parallelism stops delivering. Measured at gate-setting time: 0.589.",
+      "parallel_over_sequential_ratio": { "max": 0.7 }
     }
   }
 }

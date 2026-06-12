@@ -236,6 +236,17 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     "cost_prediction_use_api_count":     (bool,  False),
     "cost_prediction_output_fraction":   (float, 0.5),
 
+    # Perf Phase 5 — parallel team-pipeline execution. When enabled, the
+    # coordinator's decomposition declares per-step dependencies and
+    # independent steps run concurrently on a thread pool (clamped 1..8).
+    # Local backends (Ollama / LM Studio / bundled llama.cpp) are
+    # effectively single-stream on one GPU, so local admission defaults to
+    # 1 — the wall-clock win comes from Claude/litellm-routed or
+    # mixed-backend subtask sets.
+    "pipeline_parallel_enabled":         (bool,  False),
+    "pipeline_max_concurrency":          (int,   3),
+    "pipeline_local_concurrency":        (int,   1),
+
     # Feature flags (v4.0+)
     "goal_decomposition_enabled":    (bool,  True),
     "interleaved_reasoning_enabled": (bool,  True),
@@ -1278,6 +1289,28 @@ FIELD_METADATA: dict[str, dict] = {
         "description": "Enable user-defined multi-step workflows (DAGs) on top of the team pipeline.",
         "type":        "bool",
         "group":       "advanced",
+    },
+    "pipeline_parallel_enabled": {
+        "label":       "Parallel team pipeline",
+        "description": "Run independent team-pipeline steps concurrently. Local models (Ollama/LM Studio) are single-stream on one GPU, so the speedup comes from Claude- or LiteLLM-routed (or mixed-backend) steps.",
+        "type":        "bool",
+        "group":       "advanced",
+    },
+    "pipeline_max_concurrency": {
+        "label":       "Pipeline concurrency",
+        "description": "Maximum team-pipeline steps in flight at once when parallel execution is enabled.",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         1,
+        "max":         8,
+    },
+    "pipeline_local_concurrency": {
+        "label":       "Local-model pipeline concurrency",
+        "description": "Maximum concurrent pipeline calls to the local backend. Keep at 1 unless your local server batches requests — local inference is effectively single-stream on one GPU.",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         1,
+        "max":         8,
     },
     "studio_mode": {
         "label":       "Studio mode",

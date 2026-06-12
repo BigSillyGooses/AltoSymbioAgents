@@ -7,17 +7,20 @@ deterministic bag-of-words embedder wired into ``services.semantic_search``,
 ``services.perf_metrics`` enabled) and returns a metrics dict. The runner
 attaches the perf_metrics span snapshot and wall clock afterwards.
 
-Four scenarios (``team_pipeline`` arrives with Phase 5):
+Five scenarios:
 
-  - ``chat_short``  5-turn single-agent conversation through the REAL
-                    ChatOrchestrator with fake clients injected.
-  - ``chat_long``   Phase 3: 30 turns that overflow an 8,000-char history
-                    budget, run in four flag configs (off / history caching /
-                    compaction / both) reporting the billed-input proxy.
-  - ``rag_heavy``   ~2,000 fixture chunks through the production ingest +
-                    indexer path, then 50 hybrid queries.
-  - ``routing``     200 seeded trajectories, then 100 routing-recall
-                    decisions (find_similar + bias_table) with latency spans.
+  - ``chat_short``    5-turn single-agent conversation through the REAL
+                      ChatOrchestrator with fake clients injected.
+  - ``chat_long``     Phase 3: 30 turns that overflow an 8,000-char history
+                      budget, run in four flag configs (off / history caching /
+                      compaction / both) reporting the billed-input proxy.
+  - ``rag_heavy``     ~2,000 fixture chunks through the production ingest +
+                      indexer path, then 50 hybrid queries.
+  - ``team_pipeline`` Phase 5: a 6-subtask mixed-dependency plan through the
+                      REAL PipelineExecutor, run sequential then parallel,
+                      reporting the wall-clock ratio and token parity.
+  - ``routing``       200 seeded trajectories, then 100 routing-recall
+                      decisions (find_similar + bias_table) with latency spans.
 
 Determinism contract: everything except span timings / wall clock must be
 identical across two consecutive runs (asserted by tests/test_perf_harness.py).
@@ -413,6 +416,154 @@ def run_rag_heavy() -> dict:
     }
 
 
+# ── team_pipeline ─────────────────────────────────────────────────────────────
+
+def run_team_pipeline() -> dict:
+    """A 6-subtask team pipeline run TWICE — sequential vs parallel (Phase 5).
+
+    The fixture plan has 4 independent steps plus two dependent ones (step 5
+    needs 1+2, step 6 needs 5). Both runs drive the REAL PipelineExecutor +
+    HubRouter over the isolated env, against a seeded coordinator + 6
+    specialists. Specialists are claude-routed (FakeClaudeClient, simulated
+    500 ms/call) so ``pipeline_max_concurrency=3`` is actually exercised;
+    the coordinator's decomposition + synthesis are local-routed
+    (FakeLocalClient, simulated 300 ms/call) — mirroring the honest speedup
+    claim: local inference is single-stream, the parallel win comes from
+    Claude-routed subtasks.
+
+    Token parity (``tokens_identical``): parallelism must not change spend.
+    Two fixture properties make the per-call prompts byte-identical across
+    modes so the assertion is exact:
+      - every specialist artifact exceeds MAX_UPSTREAM_CONTEXT_CHARS, so the
+        upstream-context builder injects NOTHING in either mode (sequential
+        all-prior context and parallel deps-only context both come out
+        empty);
+      - specialist replies are keyed on the TASK-N marker in each step's
+        description, so concurrent arrival order cannot shuffle which step
+        gets which reply.
+    The decomposition PROMPT does differ between modes by design
+    (DECOMPOSITION_PROMPT_PARALLEL adds the depends_on rule), but the
+    decomposition runs on the local backend, whose fake charges input by
+    reply length — and the production accounting difference is one constant
+    prompt, not a per-step cost.
+
+    ``parallel_over_sequential_ratio`` is latency-class (wall clock) even
+    though its name doesn't end in ``_ms`` — runner.deterministic_view
+    strips ``_ratio`` keys for the same reason.
+    """
+    import time as _time
+
+    import db
+    from services.hub_router import HubRouter
+    from services.pipeline import PipelineExecutor
+
+    from benchmarks.perf.fake_clients import FakeClaudeClient, FakeLocalClient
+
+    fixture = load_fixture("team_pipeline")
+    now = "2026-01-01T00:00:00+00:00"
+
+    # Seed the real rows PipelineExecutor.run reads: the coordinator + 6
+    # specialist agents, the team row, and the membership rows. model
+    # preference is the routing key — HubRouter.route_for_agent resolves
+    # "local"/"claude" into the backend each step invokes. thinking_budget
+    # is pinned to 0 (the column defaults to 2048) so the local coordinator
+    # takes the plain chat path instead of qwen_thinking.
+    db.execute(
+        "INSERT INTO agents (id, name, description, system_prompt, "
+        "model_preference, role, is_builtin, skills, thinking_budget, "
+        "created_at, updated_at) "
+        "VALUES (?, ?, '', ?, 'local', 'coordinator', 0, '[]', 0, ?, ?)",
+        (fixture["coordinator_id"], "Coordinator",
+         fixture["coordinator_system_prompt"], now, now),
+    )
+    for spec in fixture["specialists"]:
+        db.execute(
+            "INSERT INTO agents (id, name, description, system_prompt, "
+            "model_preference, role, is_builtin, skills, thinking_budget, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, '', ?, 'claude', ?, 0, '[]', 0, ?, ?)",
+            (spec["id"], spec["name"], spec["system_prompt"], spec["role"],
+             now, now),
+        )
+    db.execute(
+        "INSERT INTO agent_teams (id, name, description, coordinator_id, "
+        "created_at, updated_at) VALUES (?, 'Perf Team', '', ?, ?, ?)",
+        (fixture["team_id"], fixture["coordinator_id"], now, now),
+    )
+    for i, spec in enumerate(fixture["specialists"]):
+        db.execute(
+            "INSERT INTO agent_team_members (team_id, agent_id, role, "
+            "sort_order) VALUES (?, ?, 'worker', ?)",
+            (fixture["team_id"], spec["id"], i),
+        )
+    db.commit()
+
+    keyed_replies = {
+        s["reply_key"]: s["reply"] for s in fixture["specialists"]
+    }
+
+    def _run_mode(parallel: bool) -> dict:
+        # Fresh fake clients per mode so reply cursors and call logs don't
+        # leak between runs; settings is a plain dict like the other
+        # scenarios (every collaborator reads via ``settings.get``).
+        settings = {
+            "pipeline_parallel_enabled": parallel,
+            "pipeline_max_concurrency": 3,
+            "pipeline_local_concurrency": 1,
+            "debate_enabled": False,
+        }
+        claude = FakeClaudeClient(
+            replies=["unused — every specialist reply is keyed"],
+            keyed_replies=keyed_replies,
+            simulated_latency_ms=float(fixture["claude_latency_ms"]),
+        )
+        local = FakeLocalClient(
+            replies=[fixture["decomposition_reply"], fixture["synthesis_reply"]],
+            simulated_latency_ms=float(fixture["local_latency_ms"]),
+        )
+        hub = HubRouter(claude, local, settings)
+        executor = PipelineExecutor(hub, settings)
+
+        started = _time.perf_counter()
+        result = executor.run(
+            team_id=fixture["team_id"],
+            user_message=fixture["user_message"],
+            conversation_id=f"perf-team-{'parallel' if parallel else 'sequential'}",
+            history=[],
+        )
+        wall_clock = round((_time.perf_counter() - started) * 1000.0, 3)
+
+        return {
+            "steps": len(result.steps),
+            "validation_passed_steps": sum(
+                1 for s in result.steps if s["validation_passed"]
+            ),
+            "total_tokens_in": result.total_tokens_in,
+            "total_tokens_out": result.total_tokens_out,
+            "synthesis_chars": len(result.synthesis),
+            "specialist_calls": len(claude.calls),
+            "wall_clock_ms": wall_clock,
+        }
+
+    sequential = _run_mode(parallel=False)
+    parallel = _run_mode(parallel=True)
+
+    tokens_identical = int(
+        sequential["total_tokens_in"] == parallel["total_tokens_in"]
+        and sequential["total_tokens_out"] == parallel["total_tokens_out"]
+    )
+
+    return {
+        "sequential": sequential,
+        "parallel": parallel,
+        # 1/0 so the deterministic gate can express ``min: 1``.
+        "tokens_identical": tokens_identical,
+        "parallel_over_sequential_ratio": _safe_rate(
+            parallel["wall_clock_ms"], sequential["wall_clock_ms"],
+        ),
+    }
+
+
 # ── routing ───────────────────────────────────────────────────────────────────
 
 def run_routing() -> dict:
@@ -482,5 +633,6 @@ SCENARIOS = {
     "chat_short": run_chat_short,
     "chat_long": run_chat_long,
     "rag_heavy": run_rag_heavy,
+    "team_pipeline": run_team_pipeline,
     "routing": run_routing,
 }

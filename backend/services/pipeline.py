@@ -25,9 +25,12 @@ Layer 2 wiring (Priority 4 + Priority 6):
 
 from __future__ import annotations
 
+import concurrent.futures
+import copy
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -62,6 +65,13 @@ MAX_RETRIES_PER_STEP = 3
 # Prevents context rot when many specialists contribute.
 MAX_UPSTREAM_CONTEXT_CHARS = 12_000
 
+# Perf Phase 5: clamp range for the parallel scheduler's worker pool
+# (``pipeline_max_concurrency`` setting). The floor keeps a misconfigured 0
+# from deadlocking; the ceiling keeps a runaway value from spawning a thread
+# per subtask times retries.
+MIN_PARALLEL_WORKERS = 1
+MAX_PARALLEL_WORKERS = 8
+
 # Workflow-checkpoint state vocabulary. Kept at module scope so tests and
 # downstream consumers can import the strings instead of re-typing them.
 CHECKPOINT_PROVISIONAL = "provisional"
@@ -84,6 +94,74 @@ def _setting_truthy(settings, key: str, default: bool) -> bool:
     if not s:
         return default
     return s in ("1", "true", "yes", "on")
+
+
+def _setting_int(settings, key: str, default: int) -> int:
+    """Coerce a settings value to int, falling back to ``default``."""
+    try:
+        raw = settings.get(key, default)
+    except Exception:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+# ── Per-backend admission control (Perf Phase 5) ─────────────────────────────
+#
+# Module-level so every parallel pipeline run in the process shares ONE
+# admission gate per backend class. Local inference (Ollama / LM Studio /
+# the bundled llama.cpp server) is effectively single-stream on one GPU, so
+# its semaphore defaults to 1 permit — parallel wall-clock wins come from
+# Claude/litellm-routed or mixed-backend subtask sets, which share the
+# pipeline-wide limit. A semaphore is lazily (re)created when its configured
+# limit changes; a change while permits are held only affects subsequent
+# acquisitions, which is acceptable for an advisory gate.
+
+_admission_lock = threading.Lock()
+_admission_semaphores: dict[str, tuple[int, threading.Semaphore]] = {}
+
+
+def _backend_semaphore(key: str, limit: int) -> threading.Semaphore:
+    """Return the shared admission semaphore for ``key`` at ``limit`` permits."""
+    limit = max(1, int(limit))
+    with _admission_lock:
+        entry = _admission_semaphores.get(key)
+        if entry is None or entry[0] != limit:
+            entry = (limit, threading.Semaphore(limit))
+            _admission_semaphores[key] = entry
+        return entry[1]
+
+
+class _AdmissionGatedHub:
+    """Wrap a HubRouter, gating ``invoke()`` behind per-backend semaphores.
+
+    Used ONLY by the parallel scheduler — the sequential path calls the hub
+    directly and stays byte-identical. HubRouter remains the single worker
+    invocation boundary; this proxy adds admission control around that
+    boundary and nothing else. The backend is read off the RoutingDecision
+    the pipeline routed for the step: ``local`` competes for the local
+    semaphore (``pipeline_local_concurrency``, default 1 — single GPU),
+    everything else (claude/litellm) shares the remote semaphore
+    (``pipeline_max_concurrency``). All other attributes pass through.
+    """
+
+    def __init__(self, hub: HubRouter, local_limit: int, remote_limit: int):
+        self._gated_hub = hub
+        self._local_limit = local_limit
+        self._remote_limit = remote_limit
+
+    def invoke(self, decision, *args, **kwargs):
+        if getattr(decision, "backend", "") == "local":
+            sem = _backend_semaphore("local", self._local_limit)
+        else:
+            sem = _backend_semaphore("remote", self._remote_limit)
+        with sem:
+            return self._gated_hub.invoke(decision, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._gated_hub, name)
 
 
 def _str_list(raw) -> list:
@@ -174,6 +252,11 @@ class SubTask:
     agent_id: str
     agent_name: str
     description: str
+    # 0-BASED indexes into the parsed subtask list of the steps whose output
+    # this step needs (the coordinator emits 1-based indexes; _parse_subtasks
+    # normalizes). Only populated when pipeline_parallel_enabled is on, and
+    # guaranteed to reference strictly earlier steps — a DAG by construction.
+    # Flag off: always [] (sequential semantics, exactly as before Phase 5).
     depends_on: list = field(default_factory=list)
 
 
@@ -207,6 +290,33 @@ Return ONLY a JSON array. Each element:
 
 Rules:
 - Order matters: earlier steps execute first, later steps can reference earlier results.
+- Use 1 step if the task is simple enough for one specialist.
+- Maximum {max_steps} steps.
+- Every step must map to one of the listed specialists.
+- If the task doesn't need specialisation, return a single step with yourself as the agent.
+- Do NOT include a "synthesis" step — that happens automatically after all specialists finish.
+"""
+
+# Perf Phase 5: dependency-aware clone of DECOMPOSITION_PROMPT, used ONLY
+# when ``pipeline_parallel_enabled`` is on. The flag-off prompt above must
+# stay byte-identical (tests assert it), so the depends_on field and its
+# rule are added here instead of edited in.
+DECOMPOSITION_PROMPT_PARALLEL = """You are a team coordinator. Break the user's request into sub-tasks for your specialists.
+
+Available specialists:
+{agent_list}
+
+Return ONLY a JSON array. Each element:
+{{
+  "agent_id": "<id of the specialist>",
+  "agent_name": "<name for display>",
+  "description": "<what this specialist should do — be specific>",
+  "depends_on": [<1-based indexes of EARLIER steps>]
+}}
+
+Rules:
+- Order matters: earlier steps execute first, later steps can reference earlier results.
+- Mark a dependency ONLY if the step needs another step's output to do its work; steps that can proceed from the user request alone must have an empty list.
 - Use 1 step if the task is simple enough for one specialist.
 - Maximum {max_steps} steps.
 - Every step must map to one of the listed specialists.
@@ -355,7 +465,18 @@ class PipelineExecutor:
             for m in members
         )
 
-        decomp_system = DECOMPOSITION_PROMPT.format(
+        # Perf Phase 5: dependency-aware decomposition + wave scheduling,
+        # flag-gated. Flag off keeps DECOMPOSITION_PROMPT, an empty
+        # depends_on on every SubTask, and the sequential loop below —
+        # byte-identical to pre-Phase-5 turns.
+        parallel_enabled = _setting_truthy(
+            self._settings, "pipeline_parallel_enabled", default=False,
+        )
+
+        decomp_system = (
+            DECOMPOSITION_PROMPT_PARALLEL if parallel_enabled
+            else DECOMPOSITION_PROMPT
+        ).format(
             agent_list=agent_list,
             max_steps=MAX_SUBTASKS,
         )
@@ -369,7 +490,9 @@ class PipelineExecutor:
             decomp_decision, decomp_system, decomp_messages, max_tokens=2048,
         )
 
-        subtasks = self._parse_subtasks(decomp_result.text, members, coordinator)
+        subtasks = self._parse_subtasks(
+            decomp_result.text, members, coordinator, parallel=parallel_enabled,
+        )
         if not subtasks:
             log.warning(
                 "Coordinator produced no subtasks; falling back to coordinator-only",
@@ -398,7 +521,24 @@ class PipelineExecutor:
         debate_id = str(uuid.uuid4())  # one debate per turn; many challenges
         debate_active = self._debate_should_run(user_message)
 
-        for i, subtask in enumerate(subtasks):
+        # Perf Phase 5: the parallel scheduler replaces the sequential loop
+        # below when the flag is on; flag off iterates the same loop body,
+        # textually untouched, over the full subtask list.
+        if parallel_enabled:
+            handoffs, challenges, step_summaries = self._run_steps_parallel(
+                subtasks=subtasks,
+                user_message=user_message,
+                team_allowed_tools=team_allowed_tools,
+                pipeline_id=pipeline_id,
+                debate_active=debate_active,
+                debate_id=debate_id,
+                emit=emit,
+            )
+            sequential_subtasks: list = []
+        else:
+            sequential_subtasks = subtasks
+
+        for i, subtask in enumerate(sequential_subtasks):
             emit("pipeline_step_started", {
                 "step": i + 1,
                 "total": len(subtasks),
@@ -641,6 +781,264 @@ class PipelineExecutor:
         # log it and the synthesizer can see the failure flagged.
         return last_packet  # type: ignore[return-value]
 
+    # ── Perf Phase 5: parallel wave scheduler ───────────────────────────────
+
+    def _run_steps_parallel(
+        self,
+        subtasks: list,
+        user_message: str,
+        team_allowed_tools: list,
+        pipeline_id: str,
+        debate_active: bool,
+        debate_id: str,
+        emit: Callable[[str, dict], None],
+    ) -> tuple[list, list, list]:
+        """Execute the subtasks as a dependency DAG over a thread pool.
+
+        Wave/topological scheduling: a step becomes runnable once every step
+        in its ``depends_on`` has reached a TERMINAL outcome — committed OR
+        retries-exhausted (final rollback). That mirrors the sequential loop
+        exactly: there, a failed step's packet still flows downstream (it is
+        appended to ``handoffs`` and shows up — failure flag and all — in
+        later steps' upstream context), so dependents run either way and see
+        whatever packet the dependency produced.
+
+        Each step executes the existing ``_run_step_with_saga`` UNCHANGED,
+        so per-step saga semantics (provisional → committed/rolled_back,
+        retry-with-failure-reason) are identical to sequential execution.
+
+        Results land in index-slotted lists — exactly one writer per slot,
+        no appends from worker threads — and are compacted in step order
+        afterwards, so the synthesis prompt has the exact shape sequential
+        execution produces for the same packets.
+
+        Admission control: workers reach the hub through _AdmissionGatedHub,
+        which serializes local inference (``pipeline_local_concurrency``,
+        default 1 — one GPU is single-stream) while Claude/litellm calls
+        overlap up to ``pipeline_max_concurrency``.
+
+        A step that raises is recorded as an error packet and its dependents
+        still run — one failure never deadlocks a wave. SSE events may
+        interleave across steps; every payload carries its 1-based ``step``.
+
+        Returns ``(handoffs, challenges, step_summaries)`` compacted in step
+        order, matching what the sequential loop accumulates.
+        """
+        total = len(subtasks)
+        max_workers = min(
+            MAX_PARALLEL_WORKERS,
+            max(MIN_PARALLEL_WORKERS,
+                _setting_int(self._settings, "pipeline_max_concurrency", 3)),
+        )
+        local_limit = min(
+            MAX_PARALLEL_WORKERS,
+            max(1, _setting_int(self._settings, "pipeline_local_concurrency", 1)),
+        )
+
+        # Shallow copy of the executor with the hub swapped for the gated
+        # proxy: worker threads run the existing saga/challenger methods on
+        # this copy, so every hub.invoke inside them — and ONLY them; the
+        # sequential path never sees the proxy — passes admission control.
+        gated = copy.copy(self)
+        gated._hub = _AdmissionGatedHub(self._hub, local_limit, max_workers)
+
+        packet_slots: list = [None] * total
+        challenge_slots: list = [None] * total
+        summary_slots: list = [None] * total
+        finished = [False] * total
+
+        def _run_one(i: int) -> None:
+            subtask = subtasks[i]
+            emit("pipeline_step_started", {
+                "step": i + 1,
+                "total": total,
+                "agent": subtask.agent_name,
+                "task": subtask.description,
+            })
+
+            specialist_row = _db.fetchone(
+                "SELECT * FROM agents WHERE id = ?", (subtask.agent_id,),
+            )
+            if not specialist_row:
+                log.error("Specialist %s not found, skipping", subtask.agent_id)
+                return
+            specialist = dict(specialist_row)
+
+            specialist_system = (
+                specialist.get("system_prompt") or "You are a helpful specialist."
+            )
+            specialist_allowed_tools = _parse_allowed_tools(
+                specialist.get("allowed_tools"),
+            )
+            effective_tools = _union_allowed_tools(
+                specialist_allowed_tools, team_allowed_tools,
+            )
+            if effective_tools:
+                specialist_system += (
+                    "\n\nAllowed tools for this team: "
+                    + ", ".join(effective_tools)
+                )
+
+            # Parallel-mode upstream context: packets of this step's
+            # TRANSITIVE dependencies only (see _transitive_deps). All of
+            # them are terminal by the time the scheduler made this step
+            # runnable, so reading their slots is race-free.
+            dep_packets = [
+                packet_slots[d]
+                for d in self._transitive_deps(subtasks, i)
+                if packet_slots[d] is not None
+            ]
+            upstream_context = self._build_upstream_context(dep_packets)
+            if upstream_context:
+                specialist_system += "\n\n" + upstream_context
+
+            spec_task = TaskDescriptor(
+                text=subtask.description, preferred_agent_id=subtask.agent_id,
+            )
+            spec_decision = self._hub.route_for_agent(subtask.agent_id, spec_task)
+
+            packet = gated._run_step_with_saga(
+                spec_decision=spec_decision,
+                specialist_system=specialist_system,
+                subtask=subtask,
+                user_message=user_message,
+                pipeline_id=pipeline_id,
+                step_index=i,
+                emit=emit,
+            )
+
+            self._log_handoff(packet)
+            packet_slots[i] = packet
+
+            challenge = None
+            if debate_active and packet.validation_passed:
+                challenge = gated._run_challenger(
+                    subtask=subtask,
+                    packet=packet,
+                    pipeline_id=pipeline_id,
+                    debate_id=debate_id,
+                    emit=emit,
+                )
+                if challenge is not None:
+                    challenge_slots[i] = challenge
+                    self._log_challenge(challenge)
+
+            summary = {
+                "step": i + 1,
+                "agent": subtask.agent_name,
+                "task": subtask.description,
+                "confidence": packet.confidence_label,
+                "validation_passed": packet.validation_passed,
+                "tokens": packet.input_tokens + packet.output_tokens,
+                "duration_ms": round(packet.duration_ms),
+                "challenger_signal": (
+                    challenge.has_signal() if challenge is not None else False
+                ),
+            }
+            summary_slots[i] = summary
+            emit("pipeline_step_complete", summary)
+
+        def _run_one_safe(i: int) -> None:
+            # The sequential loop surfaces model errors INSIDE the
+            # WorkerResult (hub.invoke never raises in practice), so an
+            # exception here is unexpected — but it must terminate the step
+            # with an error packet rather than deadlock its dependents.
+            try:
+                _run_one(i)
+            except Exception as exc:
+                log.error("Parallel pipeline step %d failed: %s", i + 1, exc)
+                if packet_slots[i] is not None:
+                    return  # step already produced its packet; just finish
+                subtask = subtasks[i]
+                packet = HandoffPacket(
+                    agent_id=subtask.agent_id,
+                    agent_name=subtask.agent_name,
+                    subtask_completed=subtask.description,
+                    artifact=f"[Error: {exc}]",
+                    uncertainties=[
+                        "Specialist invocation raised an exception.",
+                    ],
+                    confidence=0.3,
+                    workflow_id=pipeline_id,
+                    step_index=i,
+                    validation_passed=False,
+                    validation_notes=[str(exc)[:500]],
+                )
+                self._log_handoff(packet)
+                packet_slots[i] = packet
+                summary = {
+                    "step": i + 1,
+                    "agent": subtask.agent_name,
+                    "task": subtask.description,
+                    "confidence": packet.confidence_label,
+                    "validation_passed": False,
+                    "tokens": 0,
+                    "duration_ms": 0,
+                    "challenger_signal": False,
+                }
+                summary_slots[i] = summary
+                emit("pipeline_step_complete", summary)
+
+        pending = set(range(total))
+        running: dict = {}  # future → step index
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+        ) as pool:
+            while pending or running:
+                runnable = sorted(
+                    i for i in pending
+                    if all(
+                        finished[d]
+                        for d in subtasks[i].depends_on
+                        if isinstance(d, int) and 0 <= d < total
+                    )
+                )
+                for i in runnable:
+                    pending.discard(i)
+                    running[pool.submit(_run_one_safe, i)] = i
+                if not running:
+                    # Unreachable when depends_on came through
+                    # _parse_subtasks (DAG by construction), but a malformed
+                    # in-memory SubTask must degrade to skipped steps, never
+                    # to a hang.
+                    log.error(
+                        "Parallel scheduler stalled with %d unrunnable "
+                        "steps; skipping them", len(pending),
+                    )
+                    break
+                done, _ = concurrent.futures.wait(
+                    running, return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for fut in done:
+                    finished[running.pop(fut)] = True
+
+        handoffs = [p for p in packet_slots if p is not None]
+        challenges = [c for c in challenge_slots if c is not None]
+        step_summaries = [s for s in summary_slots if s is not None]
+        return handoffs, challenges, step_summaries
+
+    @staticmethod
+    def _transitive_deps(subtasks: list, index: int) -> list:
+        """All steps ``index`` transitively depends on, sorted by step index.
+
+        Parallel-mode upstream context is built from EXACTLY these packets.
+        This is the deliberate semantic difference from sequential mode,
+        where every prior handoff flows into every later step: the
+        coordinator declaring a step independent (empty depends_on) is a
+        statement that the step can proceed from the user request alone, so
+        sibling output is withheld — both to honor that contract and because
+        siblings may still be running when this step starts.
+        """
+        seen: set[int] = set()
+        stack = list(subtasks[index].depends_on)
+        while stack:
+            d = stack.pop()
+            if not isinstance(d, int) or d in seen or not 0 <= d < index:
+                continue
+            seen.add(d)
+            stack.extend(subtasks[d].depends_on)
+        return sorted(seen)
+
     def _build_specialist_messages(
         self, subtask: SubTask, user_message: str, prior_failure_reason: str = "",
     ) -> list:
@@ -722,8 +1120,27 @@ class PipelineExecutor:
 
     def _parse_subtasks(
         self, raw: str, members: list, coordinator: dict,
+        parallel: bool = False,
     ) -> list:
-        """Parse the coordinator's JSON decomposition into SubTask objects."""
+        """Parse the coordinator's JSON decomposition into SubTask objects.
+
+        When ``parallel`` is True (pipeline_parallel_enabled), each item's
+        ``depends_on`` — 1-based indexes of EARLIER steps as the coordinator
+        listed them — is normalized to 0-BASED indexes into the RETURNED
+        subtask list (the internal convention everywhere downstream: slots,
+        scheduler, transitive-deps walk). Validation makes the result a DAG
+        by construction:
+          - only ints referencing strictly earlier steps are kept; forward
+            and self references are dropped with a log warning;
+          - references to steps that were themselves dropped (unknown agent,
+            empty description) are dropped — their output cannot exist,
+            mirroring how the sequential loop contributes nothing for them;
+          - a missing or malformed ``depends_on`` makes the step depend on
+            ALL earlier kept steps — safe degradation to sequential
+            semantics rather than risking an incorrect parallel ordering.
+        When ``parallel`` is False, ``depends_on`` in the coordinator output
+        is ignored and every SubTask keeps the pre-Phase-5 empty list.
+        """
         text = (raw or "").strip()
         if "```" in text:
             match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
@@ -743,7 +1160,11 @@ class PipelineExecutor:
         member_ids.add(coordinator["id"])
 
         subtasks: list[SubTask] = []
-        for item in items[:MAX_SUBTASKS]:
+        # 1-based position in the coordinator's list → index in ``subtasks``
+        # for items that survived filtering. Parallel-mode depends_on
+        # references resolve through this map.
+        kept_index_by_position: dict[int, int] = {}
+        for position, item in enumerate(items[:MAX_SUBTASKS], start=1):
             if not isinstance(item, dict):
                 continue
             aid = item.get("agent_id", "")
@@ -755,20 +1176,82 @@ class PipelineExecutor:
             description = str(item.get("description") or "").strip()
             if not description:
                 continue
+            depends_on: list = []
+            if parallel:
+                depends_on = self._parse_depends_on(
+                    item.get("depends_on"), position,
+                    kept_index_by_position, len(subtasks),
+                )
+            kept_index_by_position[position] = len(subtasks)
             subtasks.append(SubTask(
                 agent_id=aid,
                 agent_name=str(item.get("agent_name") or aid),
                 description=description,
+                depends_on=depends_on,
             ))
 
         return subtasks
 
-    def _build_upstream_context(self, handoffs: list) -> str:
-        """Build upstream context from completed HandoffPackets.
+    @staticmethod
+    def _parse_depends_on(
+        raw, position: int, kept_index_by_position: dict, kept_count: int,
+    ) -> list:
+        """Validate one item's ``depends_on`` (parallel mode only).
 
-        Caps total injected text to prevent context rot on downstream agents.
-        Most recent handoffs get priority — they're more likely to be directly
-        relevant to the current step.
+        ``position`` is the item's own 1-based position in the coordinator's
+        list, ``kept_index_by_position`` maps earlier positions to indexes in
+        the kept subtask list, and ``kept_count`` is the item's own future
+        kept index. Returns sorted 0-based kept indexes. A missing or
+        non-list value degrades to "depends on all earlier kept steps".
+        """
+        if not isinstance(raw, list):
+            if raw is not None:
+                log.warning(
+                    "Step %d depends_on is not a list (%.80r); treating the "
+                    "step as depending on all earlier steps", position, raw,
+                )
+            return list(range(kept_count))
+
+        deps: set[int] = set()
+        for ref in raw:
+            # bool is an int subclass; ``true`` is not a step reference.
+            if isinstance(ref, bool) or not isinstance(ref, int):
+                log.warning(
+                    "Step %d depends_on entry %.80r is not an integer; "
+                    "dropping it", position, ref,
+                )
+                continue
+            if ref < 1 or ref >= position:
+                log.warning(
+                    "Step %d depends_on %d is not a strictly earlier step; "
+                    "dropping it (forward/self references are invalid)",
+                    position, ref,
+                )
+                continue
+            kept = kept_index_by_position.get(ref)
+            if kept is None:
+                log.warning(
+                    "Step %d depends_on %d references a dropped step; "
+                    "dropping the reference", position, ref,
+                )
+                continue
+            deps.add(kept)
+        return sorted(deps)
+
+    def _build_upstream_context(self, handoffs: list) -> str:
+        """Build upstream context from an explicit list of HandoffPackets.
+
+        The caller chooses the packets, which is where the two execution
+        modes differ semantically:
+          - sequential mode passes ALL prior handoffs (every later step sees
+            everything that ran before it);
+          - parallel mode passes only the step's TRANSITIVE dependencies,
+            ordered by step index — the coordinator declaring a step
+            independent means it must not need sibling output.
+        Either way the same MAX_UPSTREAM_CONTEXT_CHARS cap applies to
+        prevent context rot on downstream agents. Most recent handoffs get
+        priority — they're more likely to be directly relevant to the
+        current step.
         """
         if not handoffs:
             return ""

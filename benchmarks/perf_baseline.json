@@ -1,5 +1,5 @@
 {
-  "duration_seconds": 46.203,
+  "duration_seconds": 40.09,
   "scenarios": {
     "chat_long": {
       "billed_reduction_pct_both": 58.32,
@@ -893,22 +893,23 @@
       },
       "scenario": "chat_long",
       "spans": {},
-      "wall_clock_ms": 1233.17
+      "wall_clock_ms": 863.851
     },
     "chat_short": {
       "cache_hit_rate": 0.896041,
       "cost_per_turn_usd": 0.00426,
+      "prediction_mape": 0.5089,
       "scenario": "chat_short",
       "spans": {
         "model_call": {
-          "avg_ms": 0.232,
+          "avg_ms": 0.153,
           "count": 5,
-          "total_ms": 1.159
+          "total_ms": 0.766
         },
         "retrieval_total": {
-          "avg_ms": 0.059,
+          "avg_ms": 0.048,
           "count": 5,
-          "total_ms": 0.294
+          "total_ms": 0.24
         }
       },
       "tokens_in_per_turn": 224.8,
@@ -927,6 +928,8 @@
           "cache_read_tokens": 0,
           "cost_usd": 0.0105525,
           "model": "claude-sonnet-4-6",
+          "predicted_input_tokens": 2438,
+          "prediction_ape_pct": 0.1638,
           "route_reason": "perf-fixture route",
           "tokens_in": 20,
           "tokens_out": 94,
@@ -937,6 +940,8 @@
           "cache_read_tokens": 2422,
           "cost_usd": 0.0022206,
           "model": "claude-sonnet-4-6",
+          "predicted_input_tokens": 2546,
+          "prediction_ape_pct": 0.3523,
           "route_reason": "perf-fixture route",
           "tokens_in": 133,
           "tokens_out": 73,
@@ -947,6 +952,8 @@
           "cache_read_tokens": 2422,
           "cost_usd": 0.0026166,
           "model": "claude-sonnet-4-6",
+          "predicted_input_tokens": 2633,
+          "prediction_ape_pct": 0.5289,
           "route_reason": "perf-fixture route",
           "tokens_in": 225,
           "tokens_out": 81,
@@ -957,6 +964,8 @@
           "cache_read_tokens": 2422,
           "cost_usd": 0.0028296,
           "model": "claude-sonnet-4-6",
+          "predicted_input_tokens": 2730,
+          "prediction_ape_pct": 0.655,
           "route_reason": "perf-fixture route",
           "tokens_in": 326,
           "tokens_out": 75,
@@ -967,13 +976,15 @@
           "cache_read_tokens": 2422,
           "cost_usd": 0.0030816,
           "model": "claude-sonnet-4-6",
+          "predicted_input_tokens": 2818,
+          "prediction_ape_pct": 0.8445,
           "route_reason": "perf-fixture route",
           "tokens_in": 420,
           "tokens_out": 73,
           "turn": 5
         }
       ],
-      "wall_clock_ms": 317.651
+      "wall_clock_ms": 239.063
     },
     "rag_heavy": {
       "chunks_ingested": 2000,
@@ -986,37 +997,37 @@
       "scenario": "rag_heavy",
       "spans": {
         "bm25": {
-          "avg_ms": 2.671,
+          "avg_ms": 2.144,
           "count": 50,
-          "total_ms": 133.552
+          "total_ms": 107.205
         },
         "embed": {
-          "avg_ms": 0.1,
+          "avg_ms": 0.071,
           "count": 2050,
-          "total_ms": 205.797
+          "total_ms": 146.219
         },
         "index_total": {
-          "avg_ms": 27508.997,
+          "avg_ms": 20159.063,
           "count": 1,
-          "total_ms": 27508.997
+          "total_ms": 20159.063
         },
         "ingest_total": {
-          "avg_ms": 15109.526,
+          "avg_ms": 11277.081,
           "count": 1,
-          "total_ms": 15109.526
+          "total_ms": 11277.081
         },
         "rrf": {
-          "avg_ms": 0.022,
+          "avg_ms": 0.019,
           "count": 50,
-          "total_ms": 1.086
+          "total_ms": 0.93
         },
         "vec_search": {
-          "avg_ms": 2.379,
+          "avg_ms": 2.0,
           "count": 50,
-          "total_ms": 118.963
+          "total_ms": 99.989
         }
       },
-      "wall_clock_ms": 42878.137
+      "wall_clock_ms": 31649.263
     },
     "routing": {
       "agents_biased": 300,
@@ -1026,24 +1037,60 @@
       "similar_hits": 300,
       "spans": {
         "embed": {
-          "avg_ms": 0.055,
+          "avg_ms": 0.044,
           "count": 400,
-          "total_ms": 22.144
+          "total_ms": 17.537
         },
         "traj_bias_table": {
-          "avg_ms": 1.365,
+          "avg_ms": 1.097,
           "count": 100,
-          "total_ms": 136.488
+          "total_ms": 109.689
         },
         "traj_find_similar": {
-          "avg_ms": 0.747,
+          "avg_ms": 0.568,
           "count": 100,
-          "total_ms": 74.744
+          "total_ms": 56.777
         }
       },
       "trajectories_seeded": 200,
-      "wall_clock_ms": 831.638
+      "wall_clock_ms": 657.871
+    },
+    "team_pipeline": {
+      "parallel": {
+        "specialist_calls": 6,
+        "steps": 6,
+        "synthesis_chars": 250,
+        "total_tokens_in": 1255,
+        "total_tokens_out": 19357,
+        "validation_passed_steps": 6,
+        "wall_clock_ms": 2148.837
+      },
+      "parallel_over_sequential_ratio": 0.588965,
+      "scenario": "team_pipeline",
+      "sequential": {
+        "specialist_calls": 6,
+        "steps": 6,
+        "synthesis_chars": 250,
+        "total_tokens_in": 1255,
+        "total_tokens_out": 19357,
+        "validation_passed_steps": 6,
+        "wall_clock_ms": 3648.498
+      },
+      "spans": {
+        "model_call": {
+          "avg_ms": 450.884,
+          "count": 16,
+          "total_ms": 7214.151
+        },
+        "pipeline_total": {
+          "avg_ms": 2898.645,
+          "count": 2,
+          "total_ms": 5797.29
+        }
+      },
+      "tokens_identical": 1,
+      "wall_clock_ms": 5801.105
     }
   },
-  "started_at": 1781239534.431712
+  "started_at": 1781281916.461198
 }
