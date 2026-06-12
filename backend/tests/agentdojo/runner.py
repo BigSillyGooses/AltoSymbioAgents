@@ -41,7 +41,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 # Make ``backend`` importable when this file runs from CI as
 # ``python -m backend.tests.agentdojo.run_suites`` and when the working
@@ -59,6 +59,10 @@ from services.security_engine import (  # noqa: E402
     render_quarantined_context,
 )
 from services.governance import GovernanceEngine  # noqa: E402
+
+# Phase 7: per-task efficiency telemetry. Relative import so the module
+# resolves through the package regardless of which path-hack ran first.
+from .perf_overlay import UsageCollector, wrap_anthropic_client  # noqa: E402
 
 log = logging.getLogger("altosybioagents.bench.agentdojo")
 
@@ -117,6 +121,10 @@ class StackHandles:
     governance: GovernanceEngine
     risk_ledger: RiskLedger
     task_key: str  # used by GovernanceEngine.set_proposed_tools / check_tool_call
+    # Phase 7: accumulates Anthropic API usage (tokens, prompt-cache reads/
+    # writes) across the Reader + Actor calls of one task. ``None`` when the
+    # caller did not request telemetry — every hook below checks first.
+    usage_collector: UsageCollector | None = None
 
 
 # ── Settings shim ─────────────────────────────────────────────────────────────
@@ -134,14 +142,27 @@ class _BenchSettings:
     measures the published architecture (Reader/Actor split + governance gate
     + quarantine + risk ledger). To benchmark the monolithic baseline,
     construct with ``split_enabled=False``.
+
+    ``enabled_flags`` (Phase 7, ``--enable-flags`` on run_suites) lists
+    setting keys forced to ``True`` for this run, so flag-on vs flag-off
+    configurations can be compared on identical suites. Any stack component
+    handed this shim sees those booleans as enabled; all other keys keep
+    returning the caller's default.
     """
 
-    def __init__(self, split_enabled: bool = True) -> None:
+    def __init__(
+        self,
+        split_enabled: bool = True,
+        enabled_flags: "Iterable[str] | None" = None,
+    ) -> None:
         self._split = bool(split_enabled)
+        self._enabled_flags = frozenset(enabled_flags or ())
 
     def get(self, key: str, default: Any = None) -> Any:
         if key == "reader_actor_split_enabled":
             return self._split
+        if key in self._enabled_flags:
+            return True
         return default
 
 
@@ -193,11 +214,24 @@ def build_pipeline(
     model: str = "claude-sonnet-4-6",
     split_enabled: bool = True,
     max_loop_iters: int = 25,
+    enabled_flags: Iterable[str] | None = None,
+    usage_collector: UsageCollector | None = None,
 ):
     """Construct the AgentDojo-compatible pipeline.
 
     Parameters mirror what AgentDojo's CLI exposes; defaults match the
     published architecture (Reader/Actor split ON, Sonnet 4.6).
+
+    Phase 7 additions (both optional, default-off — flag-off construction is
+    byte-identical to the pre-Phase-7 pipeline):
+
+    * ``enabled_flags`` — setting keys the ``_BenchSettings`` shim reports as
+      ``True`` for this run (run_suites' ``--enable-flags``).
+    * ``usage_collector`` — when given, the Actor's Anthropic client is
+      wrapped so every ``messages.create`` usage object (tokens in/out,
+      prompt-cache reads/writes) is accumulated, and the Reader pass records
+      its own response too. The caller reads ``collector.task_perf()`` after
+      the task.
 
     Returns the pipeline + a ``StackHandles`` reference the caller can
     inspect after each task to read final risk score / governance verdicts.
@@ -218,13 +252,16 @@ def build_pipeline(
         BasePipelineElement,
     )
 
-    settings = _BenchSettings(split_enabled=split_enabled)
+    settings = _BenchSettings(
+        split_enabled=split_enabled, enabled_flags=enabled_flags,
+    )
     governance = GovernanceEngine(settings)
     risk_ledger = RiskLedger()
     handles = StackHandles(
         governance=governance,
         risk_ledger=risk_ledger,
         task_key="",  # populated per-task by ReaderStage.query()
+        usage_collector=usage_collector,
     )
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -238,7 +275,24 @@ def build_pipeline(
     # AnthropicLLM in agentdojo wraps the Anthropic Messages API. We pin
     # temperature to 0 for the deterministic-where-possible contract; the
     # Reader/Actor system messages are appended in stage order below.
-    llm = AnthropicLLM(client=None, model=model, temperature=0.0)
+    #
+    # Phase 7: when a usage_collector was provided, hand AnthropicLLM a
+    # wrapped client whose ``messages.create`` responses feed the collector
+    # (the wrapper forwards everything else untouched). Best-effort — any
+    # failure constructing the wrapper falls back to the historical
+    # ``client=None`` path so telemetry can never break a bench run.
+    actor_client = None
+    if usage_collector is not None:
+        try:
+            from anthropic import Anthropic  # type: ignore
+            actor_client = wrap_anthropic_client(
+                Anthropic(api_key=api_key), usage_collector,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("perf overlay: client wrap failed (%s); "
+                        "actor usage will not be recorded", exc)
+            actor_client = None
+    llm = AnthropicLLM(client=actor_client, model=model, temperature=0.0)
 
     # ── Reader stage ─────────────────────────────────────────────────────
     # Subclassing BasePipelineElement lets us slot a "plan-only" Claude call
@@ -279,6 +333,11 @@ def build_pipeline(
                     [t.name for t in (runtime.tools if runtime else [])],
                 )
                 return query, runtime, env, messages, extra_args
+
+            # Phase 7: the Reader bypasses the wrapped Actor client, so its
+            # usage is recorded here. record_response never raises.
+            if handles.usage_collector is not None:
+                handles.usage_collector.record_response(resp)
 
             text = ""
             for block in resp.content or []:

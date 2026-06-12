@@ -17,6 +17,17 @@ through the altosybioagents stack via ``runner.build_pipeline()``. Writes
                           tool is in the agent's tool catalog (the metric
                           AgentDojo's published leaderboard uses)
     per_task            — list of (task_id, injection_id, success_kind)
+    perf                — Phase 7 efficiency overlay (purely additive):
+                          suite totals + per-task means for tokens in/out,
+                          prompt-cache reads/writes, estimated USD cost and
+                          wall-clock seconds, plus the cache hit rate. Each
+                          per_task record also carries its own ``perf`` dict.
+                          ``--perf-config`` labels the run and
+                          ``--enable-flags key1,key2`` forces those setting
+                          keys True in the bench settings shim, so the same
+                          suite can be run flags-off vs flags-on and the two
+                          JSONs compared head-to-head. Informational only —
+                          no threshold gates on perf.
 
 The script is import-clean (sys.exit codes only — never raises into the
 runtime test suite). It honours the threshold configured in
@@ -46,6 +57,7 @@ for p in (_REPO_ROOT, _BACKEND_DIR):
         sys.path.insert(0, str(p))
 
 from backend.tests.agentdojo import AGENTDOJO_AVAILABLE  # noqa: E402
+from backend.tests.agentdojo import perf_overlay  # noqa: E402
 
 log = logging.getLogger("altosybioagents.bench")
 
@@ -80,6 +92,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Don't fail the process when ASR exceeds the configured threshold.",
     )
     parser.add_argument(
+        "--perf-config", default="default",
+        help="Label recorded as perf.config_name in the output JSON, so two "
+             "runs of the same suite (e.g. flags off vs on) can be compared.",
+    )
+    parser.add_argument(
+        "--enable-flags", default="",
+        help="Comma-separated setting keys forced True in the bench settings "
+             "shim for this run (e.g. claude_history_caching,"
+             "history_compaction_enabled). Recorded as perf.enabled_flags.",
+    )
+    parser.add_argument(
         "--thresholds",
         default=str(_REPO_ROOT / "benchmarks" / "thresholds.json"),
         help="Path to per-suite ASR thresholds JSON.",
@@ -109,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
         model=args.model,
         limit=args.limit,
         split_enabled=not args.no_split,
+        perf_config_name=args.perf_config,
+        enable_flags=perf_overlay.parse_enable_flags(args.enable_flags),
     )
 
     output_path.write_text(json.dumps(results, indent=2, sort_keys=True))
@@ -131,6 +156,8 @@ def _run_suite(
     model: str,
     limit: int,
     split_enabled: bool,
+    perf_config_name: str = "default",
+    enable_flags: list[str] | None = None,
 ) -> dict[str, Any]:
     """Iterate every (user_task, injection_task) pair and tally outcomes.
 
@@ -157,6 +184,18 @@ def _run_suite(
         )
     suite = suites[suite_name]
 
+    enable_flags = list(enable_flags or [])
+
+    # Phase 7: turn the span recorder on for the run so any instrumented
+    # stack path crossed by the bench shows up in the perf block. Best-effort
+    # — telemetry must never break the safety run.
+    try:
+        from services import perf_metrics  # noqa: E402
+        perf_metrics.reset()
+        perf_metrics.enable()
+    except Exception:  # noqa: BLE001
+        perf_metrics = None  # type: ignore[assignment]
+
     user_task_ids = list(suite.user_tasks.keys())
     injection_task_ids = list(suite.injection_tasks.keys())
     if limit > 0:
@@ -172,8 +211,11 @@ def _run_suite(
 
     for ut_id in user_task_ids:
         for it_id in injection_task_ids:
+            collector = perf_overlay.UsageCollector()
+            task_started = time.perf_counter()
             pipeline, handles = build_pipeline(
                 model=model, split_enabled=split_enabled,
+                enabled_flags=enable_flags, usage_collector=collector,
             )
             attacker = ImportantInstructionsAttacker(
                 target_pipeline=pipeline,
@@ -196,6 +238,10 @@ def _run_suite(
                     "user_task": ut_id, "injection_task": it_id,
                     "utility": False, "asr": False, "targeted_asr": False,
                     "error": str(exc)[:200],
+                    "perf": collector.task_perf(
+                        model=model,
+                        wall_clock_s=time.perf_counter() - task_started,
+                    ),
                 })
                 continue
 
@@ -219,7 +265,20 @@ def _run_suite(
                 "asr": asr_ok,
                 "targeted_asr": (asr_ok and tool_in_catalog),
                 "final_risk_score": handles.risk_ledger.assess().cumulative_score,
+                "perf": collector.task_perf(
+                    model=model,
+                    wall_clock_s=time.perf_counter() - task_started,
+                ),
             })
+
+    spans: dict[str, Any] = {}
+    if perf_metrics is not None:
+        try:
+            spans = perf_metrics.snapshot()
+            perf_metrics.disable()
+            perf_metrics.reset()
+        except Exception:  # noqa: BLE001
+            spans = {}
 
     total_tasks = len(per_task)
     return {
@@ -234,6 +293,13 @@ def _run_suite(
         "asr": _safe_pct(asr_hits, total_tasks),
         "targeted_asr": _safe_pct(targeted_hits, targeted_eligible),
         "per_task": per_task,
+        # Phase 7: efficiency overlay — additive; nothing above changes.
+        "perf": perf_overlay.aggregate_suite_perf(
+            per_task,
+            config_name=perf_config_name,
+            enabled_flags=enable_flags,
+            spans=spans,
+        ),
     }
 
 
