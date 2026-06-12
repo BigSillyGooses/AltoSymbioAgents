@@ -353,6 +353,29 @@ class ClaudeClient(LLMClient):
     def client_name(self) -> str:
         return self._model
 
+    # ── Token counting (Perf Phase 4) ────────────────────────────────────────────
+
+    def count_tokens(self, system: str, messages: list,
+                     model: str | None = None, timeout: float = 10.0) -> int:
+        """Exact pre-send input-token count via POST /v1/messages/count_tokens.
+
+        Thin wrapper used by services/cost_predictor.py when the
+        ``cost_prediction_use_api_count`` setting is on. ``with_options``
+        applies a short per-call timeout so a slow count can't stall the
+        turn for long; any failure propagates to the caller (the predictor
+        catches it and falls back to its chars//4 heuristic).
+        """
+        kwargs: dict = {
+            "model": model or self._model,
+            "messages": messages,
+        }
+        if system:
+            kwargs["system"] = system
+        response = self._client.with_options(timeout=timeout).messages.count_tokens(
+            **kwargs,
+        )
+        return int(response.input_tokens)
+
     # ── Tool use (agentic loop) ──────────────────────────────────────────────────
 
     def call_with_tools(

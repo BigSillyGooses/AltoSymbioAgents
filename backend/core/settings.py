@@ -222,6 +222,20 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     "max_conversation_budget_usd":  (float, 5.0),    # stop sending if cumulative cost exceeds this
     "budget_warning_threshold_pct": (float, 80.0),    # warn frontend at this % of budget
 
+    # Perf Phase 4 — pre-turn cost prediction. All defaults preserve legacy
+    # behavior exactly (flag-off turns byte-identical). When enabled, the
+    # orchestrator estimates the turn's cost BEFORE dispatch (services/
+    # cost_predictor.py) and emits a cost_predicted SSE event; the separate
+    # block flag short-circuits turns whose predicted spend would exceed the
+    # conversation budget. use_api_count swaps the chars//4 heuristic for the
+    # exact Anthropic count_tokens endpoint (one extra API call per turn);
+    # output_fraction scales the 4096-token output ceiling when the
+    # conversation has no tokens_out history to average.
+    "cost_prediction_enabled":           (bool,  False),
+    "cost_prediction_block_over_budget": (bool,  False),
+    "cost_prediction_use_api_count":     (bool,  False),
+    "cost_prediction_output_fraction":   (float, 0.5),
+
     # Feature flags (v4.0+)
     "goal_decomposition_enabled":    (bool,  True),
     "interleaved_reasoning_enabled": (bool,  True),
@@ -748,6 +762,32 @@ FIELD_METADATA: dict[str, dict] = {
         "unit":        "%",
         "min":         0.0,
         "max":         100.0,
+    },
+    "cost_prediction_enabled": {
+        "label":       "Predict cost before sending",
+        "description": "Estimate each message's cost before it is sent and show the prediction in the chat timeline.",
+        "type":        "bool",
+        "group":       "budget",
+    },
+    "cost_prediction_block_over_budget": {
+        "label":       "Block predicted over-budget messages",
+        "description": "Stop a message before any model call when its predicted cost would push the conversation past its budget. Requires cost prediction.",
+        "type":        "bool",
+        "group":       "budget",
+    },
+    "cost_prediction_use_api_count": {
+        "label":       "Exact token counts for predictions",
+        "description": "Use Anthropic's token-counting endpoint instead of the built-in heuristic. More accurate, but adds one extra API call per message.",
+        "type":        "bool",
+        "group":       "budget",
+    },
+    "cost_prediction_output_fraction": {
+        "label":       "Predicted reply length fraction",
+        "description": "When a conversation has no reply history to average, predict the reply as this fraction of the maximum response length.",
+        "type":        "float",
+        "group":       "budget",
+        "min":         0.0,
+        "max":         1.0,
     },
 
     # ── Local models (additional) ────────────────────────────────────────────

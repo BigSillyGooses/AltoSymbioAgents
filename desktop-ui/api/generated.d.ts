@@ -2200,6 +2200,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/usage/predict": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Predict
+         * @description Approximate cost prediction for a message before it is sent.
+         */
+        post: operations["predict_api_usage_predict_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/usage/summary": {
         parameters: {
             query?: never;
@@ -2935,6 +2955,13 @@ export interface components {
         OpenUrlIn: {
             /** Url */
             url: string;
+        };
+        /** PredictIn */
+        PredictIn: {
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Message */
+            message: string;
         };
         /** PricesIn */
         PricesIn: {
@@ -7237,6 +7264,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["TestConnIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    predict_api_usage_predict_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PredictIn"];
             };
         };
         responses: {

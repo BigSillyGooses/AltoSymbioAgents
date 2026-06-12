@@ -58,6 +58,17 @@ def run_chat_short() -> dict:
     simulated system-prompt cache writes on turn 1 and reads on turns 2-5
     (the FakeLocalClient returns no extractable facts, keeping the assembled
     system prompt byte-stable across turns — see fake_clients.FakeLocalClient.chat).
+
+    Perf Phase 4: the scenario also enables ``cost_prediction_enabled`` and
+    captures each turn's ``cost_predicted`` event, reporting
+    ``prediction_mape`` — the mean absolute percentage error of the
+    predicted vs actual TOTAL input tokens (actual = input + cache read +
+    cache creation, since the API's input_tokens excludes cached tokens).
+    The fixture tokenizer is also chars//4, so this gate verifies PLUMBING
+    correctness (the predictor saw the same final prompt the worker was
+    sent — any drift between the two shows up as error), NOT real-world
+    tokenizer accuracy. The small residual comes from role labels and wire
+    separators the heuristic deliberately ignores.
     """
     import db
     from services.chat_orchestrator import ChatOrchestrator
@@ -83,6 +94,11 @@ def run_chat_short() -> dict:
         "escalation_channel_enabled": False,
         "max_conversation_budget_usd": 5.0,
         "budget_warning_threshold_pct": 80.0,
+        # Perf Phase 4: heuristic prediction per turn (block flag stays off
+        # — the scenario measures accuracy, not enforcement). Prediction is
+        # read-only + one SSE event, so every pre-existing metric is
+        # unchanged.
+        "cost_prediction_enabled": True,
     }
 
     claude = FakeClaudeClient(replies=[t["reply"] for t in fixture["turns"]])
@@ -95,8 +111,16 @@ def run_chat_short() -> dict:
 
     conversation_id = orchestrator.create_conversation()
     turns: list[dict] = []
+    prediction_apes: list[float] = []
     for i, turn in enumerate(fixture["turns"], start=1):
-        result = orchestrator.send(conversation_id, turn["user"])
+        predictions: list[dict] = []
+
+        def _on_event(event_type: str, data: dict) -> None:
+            if event_type == "cost_predicted":
+                predictions.append(dict(data))
+
+        result = orchestrator.send(conversation_id, turn["user"],
+                                   on_event=_on_event)
         # Cache accounting comes from token_usage (ChatResult doesn't carry
         # the cache columns) — TurnLifecycle.close just wrote this turn's row.
         usage_row = db.fetchone(
@@ -104,15 +128,33 @@ def run_chat_short() -> dict:
             "WHERE conversation_id = ? ORDER BY rowid DESC LIMIT 1",
             (conversation_id,),
         )
+        cache_read = usage_row["cache_read_tokens"] if usage_row else 0
+        cache_creation = usage_row["cache_creation_tokens"] if usage_row else 0
+
+        # Predicted vs actual TOTAL input. ``est_input + est_cached`` mirrors
+        # ``input + read + creation`` — both sides count the full prompt.
+        predicted_input = (
+            predictions[0]["est_input_tokens"] + predictions[0]["est_cached_tokens"]
+            if predictions else 0
+        )
+        actual_input = result.tokens_in + cache_read + cache_creation
+        ape_pct = (
+            round(100.0 * abs(predicted_input - actual_input) / actual_input, 4)
+            if actual_input > 0 else 0.0
+        )
+        prediction_apes.append(ape_pct)
+
         turns.append({
             "turn": i,
             "tokens_in": result.tokens_in,
             "tokens_out": result.tokens_out,
-            "cache_read_tokens": usage_row["cache_read_tokens"] if usage_row else 0,
-            "cache_creation_tokens": usage_row["cache_creation_tokens"] if usage_row else 0,
+            "cache_read_tokens": cache_read,
+            "cache_creation_tokens": cache_creation,
             "cost_usd": round(result.cost_usd, 8),
             "model": result.model,
             "route_reason": result.route_reason,
+            "predicted_input_tokens": predicted_input,
+            "prediction_ape_pct": ape_pct,
         })
 
     totals = {
@@ -137,6 +179,11 @@ def run_chat_short() -> dict:
             totals["cache_read_tokens"],
             totals["cache_read_tokens"] + totals["tokens_in"],
         ),
+        # Perf Phase 4: input-side prediction error — plumbing correctness
+        # gate (see docstring), deterministic by construction.
+        "prediction_mape": round(
+            sum(prediction_apes) / len(prediction_apes), 4,
+        ) if prediction_apes else 0.0,
     }
 
 

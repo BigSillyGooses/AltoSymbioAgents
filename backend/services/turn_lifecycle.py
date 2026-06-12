@@ -115,6 +115,7 @@ class TurnLifecycle:
         cost: float,
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
+        predicted_cost_usd: float | None = None,
     ) -> CloseResult:
         """Persist the assistant turn atomically.
 
@@ -137,6 +138,12 @@ class TurnLifecycle:
         ``cache_read_tokens`` / ``cache_creation_tokens`` (Perf Phase 1)
         record Anthropic prompt-cache usage for this turn; both default
         to 0 so existing callers are unchanged.
+
+        ``predicted_cost_usd`` (Perf Phase 4) records what the pre-turn
+        cost predictor estimated for this turn so predicted-vs-actual
+        accuracy can be tracked offline. ``None`` (the default — and
+        always the value when ``cost_prediction_enabled`` is off) writes
+        SQL NULL, matching the column default for pre-Phase-4 rows.
         """
         reply_text_for_storage = redact(response_text)
         resp_now = datetime.now(timezone.utc).isoformat()
@@ -166,13 +173,15 @@ class TurnLifecycle:
             conn.execute(
                 "INSERT INTO token_usage (id, conversation_id, model, tokens_in, "
                 "tokens_out, cost_usd, routed_reason, created_at, turn_id, "
-                "cache_read_tokens, cache_creation_tokens) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "cache_read_tokens, cache_creation_tokens, predicted_cost_usd) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     str(uuid.uuid4()), ctx.conversation_id, model_name,
                     tokens_in, tokens_out, cost, route_reason, resp_now,
                     ctx.turn_id,
                     int(cache_read_tokens or 0), int(cache_creation_tokens or 0),
+                    float(predicted_cost_usd) if predicted_cost_usd is not None
+                    else None,
                 ),
             )
             if ctx.budget > 0:

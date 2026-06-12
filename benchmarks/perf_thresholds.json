@@ -2,11 +2,13 @@
   "_comment": "Gates for benchmarks/perf/run_perf.py. Two classes: 'deterministic' metrics are identical on every run by construction (fixture tokenizer, scripted replies, seeded fixtures) so the ceilings are tight; 'latency' metrics vary with the host, so the ceilings are generous absolute ms bounds meant to catch order-of-magnitude regressions, not noise. Baseline snapshot: benchmarks/perf_baseline.json.",
   "deterministic": {
     "chat_short": {
+      "_comment": "Phase 4: prediction_mape is the mean abs pct error of predicted vs actual TOTAL input tokens (input + cache read + cache creation). The fixture tokenizer is also chars//4, so this gates PLUMBING correctness (the predictor saw the same final prompt the worker received), NOT real-world accuracy; the generous 5-point ceiling absorbs the role-label/separator noise the heuristic ignores. Measured at gate-setting time: 0.5089.",
       "tokens_in_per_turn": { "max": 250 },
       "tokens_out_per_turn": { "max": 90 },
       "cache_hit_rate": { "min": 0.85 },
       "cost_per_turn_usd": { "max": 0.005 },
-      "turn_count": { "min": 5, "max": 5 }
+      "turn_count": { "min": 5, "max": 5 },
+      "prediction_mape": { "max": 5 }
     },
     "chat_long": {
       "_comment": "Phase 3 headline. The billed-input ceiling for the both-flags config is precomputed as 65% of the measured flags-off run (58262.30 billed tokens -> ceiling 37870), i.e. the gate fails unless both-on stays at least 35% cheaper than off. Measured at gate-setting time: both = 24283.50 (58.3% reduction). summary_regenerations asserts batched (not per-turn) summary refresh — 7 regenerations across ~18 over-budget turns at gate-setting time.",

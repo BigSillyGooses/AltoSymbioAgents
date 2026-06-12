@@ -1617,6 +1617,65 @@ class ChatOrchestrator:
                     message_id=str(uuid.uuid4()),
                 )
 
+        # ── Perf Phase 4: pre-turn cost prediction ───────────────────────────
+        # Runs AFTER the prompt is final (post-trim, post-security-gate,
+        # post-governance — full_system and messages are exactly what the
+        # worker dispatch below will send) and BEFORE any model call. Flag
+        # off (``cost_prediction_enabled``, default): nothing runs, the turn
+        # stays byte-identical, and ``predicted_cost`` rides to close() as
+        # None → SQL NULL. Prediction is best-effort: a predictor failure
+        # can never break a turn, and the optional over-budget guard only
+        # fires on a successful prediction.
+        predicted_cost: float | None = None
+        if self._settings.get("cost_prediction_enabled", False):
+            try:
+                from services import cost_predictor
+                prediction = cost_predictor.predict(
+                    full_system, messages, target.model_name, self._settings,
+                    claude_client=self.claude,
+                    conversation_id=conversation_id,
+                )
+                predicted_cost = prediction.est_cost_usd
+                _emit_event("cost_predicted", {
+                    "conversation_id": conversation_id,
+                    "est_cost_usd": prediction.est_cost_usd,
+                    "est_input_tokens": prediction.est_input_tokens,
+                    "est_cached_tokens": prediction.est_cached_tokens,
+                    "est_output_tokens": prediction.est_output_tokens,
+                    "method": prediction.method,
+                })
+            except Exception as exc:
+                log.debug("cost prediction skipped: %s", exc)
+            if (
+                predicted_cost is not None
+                and self._settings.get("cost_prediction_block_over_budget", False)
+                and budget > 0
+                and spent + predicted_cost > budget
+            ):
+                # Same ChatResult shape as the budget_exceeded short-circuit
+                # at the top of send(). One asymmetry, mirrored deliberately:
+                # the pre-turn budget path bails inside TurnLifecycle.open()
+                # BEFORE the user-message INSERT, while this guard runs after
+                # open() — so the user message is already persisted and stays
+                # (like every other post-open short-circuit: security_abort,
+                # governance_blocked, escalation_pending). No assistant
+                # message or token_usage row is written for the blocked turn.
+                return ChatResult(
+                    text=(
+                        f"⚠️ This message is predicted to cost "
+                        f"${predicted_cost:.2f}, which would exceed the "
+                        f"${budget:.2f} conversation budget "
+                        f"(${spent:.2f} spent so far). Start a new "
+                        f"conversation or increase the limit in Settings."
+                    ),
+                    model="",
+                    route_reason="budget_predicted_exceeded",
+                    tokens_in=0,
+                    tokens_out=0,
+                    cost_usd=0.0,
+                    message_id=str(uuid.uuid4()),
+                )
+
         # ── Phase 6 split flag (computed early — Phase 8 voting needs it) ────
         split_enabled = bool(
             self._settings.get("reader_actor_split_enabled", False)
@@ -2126,6 +2185,9 @@ class ChatOrchestrator:
             cost=cost,
             cache_read_tokens=cache_read_tokens,
             cache_creation_tokens=cache_creation_tokens,
+            # Perf Phase 4: None unless cost_prediction_enabled produced an
+            # estimate above — None writes SQL NULL, the pre-Phase-4 value.
+            predicted_cost_usd=predicted_cost,
         )
         budget_warning = close_result.budget_warning
         self._turn_lifecycle.maybe_auto_title(ctx, response_text)
