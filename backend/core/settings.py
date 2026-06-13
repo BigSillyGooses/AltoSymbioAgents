@@ -136,6 +136,22 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     # Caching
     "claude_prompt_caching":       (bool,  True),
 
+    # Perf Phase 3 — extended prompt caching + rolling history compaction.
+    # Both flags default off so flag-off turns stay byte-identical.
+    # claude_history_caching adds a second Anthropic cache breakpoint at the
+    # stable end of the previous turn (services/claude_client.py
+    # _apply_history_cache); history_compaction_* summarize overflowing
+    # history instead of dropping it (services/history_compactor.py).
+    # keep_recent counts MESSAGES, not turns (a turn is two messages);
+    # batch_msgs controls how many newly-overflowed messages accumulate
+    # before the rolling summary is regenerated — batching is what keeps the
+    # cached history prefix byte-stable between regenerations.
+    "claude_history_caching":              (bool, False),
+    "history_compaction_enabled":          (bool, False),
+    "history_compaction_keep_recent_msgs": (int,  8),
+    "history_compaction_batch_msgs":       (int,  6),
+    "history_compaction_max_summary_chars": (int, 2000),
+
     # UI — start tab
     "start_tab":                   (str,   "chat"),
 
@@ -143,6 +159,25 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     "rag_folder":                  (str,   ""),
     "rag_chunk_size":              (int,   800),
     "rag_chunk_overlap":           (int,   200),
+
+    # Perf Phase 2 — retrieval upgrades. All defaults preserve the legacy
+    # behavior exactly (cache/MMR off, top_k 3, no post-RRF cutoff) so a
+    # fresh upgrade is byte-identical until the user opts in.
+    # embedding_cache_*: two-tier (memory LRU + SQLite) content-hash cache
+    # in front of the embedder — see services/embedding_cache.py.
+    "embedding_cache_enabled":     (bool,  False),
+    "embedding_cache_max_rows":    (int,   50_000),
+    "embedding_cache_memory_items": (int,  512),
+    # rag_top_k: chunks/memories retrieved per turn (was hardcoded 3).
+    "rag_top_k":                   (int,   3),
+    # MMR diversity re-rank over the RRF-fused hybrid results: greedy
+    # λ·relevance − (1−λ)·max-similarity-to-selected. λ=1 is pure
+    # relevance (≈ no re-rank); lower λ trades relevance for diversity.
+    "rag_mmr_enabled":             (bool,  False),
+    "rag_mmr_lambda":              (float, 0.7),
+    # Optional post-RRF score cutoff (0.0 = off). RRF scores live in
+    # (0, ~0.033] with k=60, so useful cutoffs are small.
+    "rag_rrf_min_score":           (float, 0.0),
 
     # Memory
     "memory_similarity_threshold": (float, 0.5),
@@ -186,6 +221,31 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     # Token budget (Stage 5)
     "max_conversation_budget_usd":  (float, 5.0),    # stop sending if cumulative cost exceeds this
     "budget_warning_threshold_pct": (float, 80.0),    # warn frontend at this % of budget
+
+    # Perf Phase 4 — pre-turn cost prediction. All defaults preserve legacy
+    # behavior exactly (flag-off turns byte-identical). When enabled, the
+    # orchestrator estimates the turn's cost BEFORE dispatch (services/
+    # cost_predictor.py) and emits a cost_predicted SSE event; the separate
+    # block flag short-circuits turns whose predicted spend would exceed the
+    # conversation budget. use_api_count swaps the chars//4 heuristic for the
+    # exact Anthropic count_tokens endpoint (one extra API call per turn);
+    # output_fraction scales the 4096-token output ceiling when the
+    # conversation has no tokens_out history to average.
+    "cost_prediction_enabled":           (bool,  False),
+    "cost_prediction_block_over_budget": (bool,  False),
+    "cost_prediction_use_api_count":     (bool,  False),
+    "cost_prediction_output_fraction":   (float, 0.5),
+
+    # Perf Phase 5 — parallel team-pipeline execution. When enabled, the
+    # coordinator's decomposition declares per-step dependencies and
+    # independent steps run concurrently on a thread pool (clamped 1..8).
+    # Local backends (Ollama / LM Studio / bundled llama.cpp) are
+    # effectively single-stream on one GPU, so local admission defaults to
+    # 1 — the wall-clock win comes from Claude/litellm-routed or
+    # mixed-backend subtask sets.
+    "pipeline_parallel_enabled":         (bool,  False),
+    "pipeline_max_concurrency":          (int,   3),
+    "pipeline_local_concurrency":        (int,   1),
 
     # Feature flags (v4.0+)
     "goal_decomposition_enabled":    (bool,  True),
@@ -252,6 +312,20 @@ SETTINGS_DEFAULTS: dict[str, tuple] = {
     "trajectory_retrieval_top_k":    (int,   3),
     "trajectory_min_similarity":     (float, 0.6),
     "trajectory_bias_weight":        (float, 0.3),
+
+    # Perf Phase 6 — Trajectory learning v2. When enabled, raw trajectories
+    # are periodically consolidated into compact "routing hints" (one
+    # exemplar per task-family × agent × backend with a graded quality
+    # score and a support count). The router consults hints first (weight
+    # below, damped by support) and falls back to the raw trajectory bias;
+    # consolidated rows are dropped from the brute-force vector table to
+    # bound search cost.
+    "trajectory_consolidation_enabled":        (bool,  False),
+    "trajectory_consolidation_min_cluster":    (int,   3),
+    "trajectory_consolidation_interval_turns": (int,   25),
+    "trajectory_hint_max_age_days":            (int,   90),
+    "trajectory_hint_merge_sim":               (float, 0.75),
+    "trajectory_hint_weight":                  (float, 0.4),
 
     # Feature 2 — Guidance / Constitution compiler. When enabled, project/role
     # rules are stored as embedded shards and only the rules relevant to the
@@ -632,6 +706,12 @@ FIELD_METADATA: dict[str, dict] = {
         "type":        "bool",
         "group":       "api",
     },
+    "claude_history_caching": {
+        "label":       "Cache conversation history",
+        "description": "Add a second cache breakpoint at the end of the previous turn so re-sent history bills at the cache-read rate on follow-up turns.",
+        "type":        "bool",
+        "group":       "api",
+    },
 
     # ── Local models ────────────────────────────────────────────────────────
     "local_backend_mode": {
@@ -708,6 +788,32 @@ FIELD_METADATA: dict[str, dict] = {
         "min":         0.0,
         "max":         100.0,
     },
+    "cost_prediction_enabled": {
+        "label":       "Predict cost before sending",
+        "description": "Estimate each message's cost before it is sent and show the prediction in the chat timeline.",
+        "type":        "bool",
+        "group":       "budget",
+    },
+    "cost_prediction_block_over_budget": {
+        "label":       "Block predicted over-budget messages",
+        "description": "Stop a message before any model call when its predicted cost would push the conversation past its budget. Requires cost prediction.",
+        "type":        "bool",
+        "group":       "budget",
+    },
+    "cost_prediction_use_api_count": {
+        "label":       "Exact token counts for predictions",
+        "description": "Use Anthropic's token-counting endpoint instead of the built-in heuristic. More accurate, but adds one extra API call per message.",
+        "type":        "bool",
+        "group":       "budget",
+    },
+    "cost_prediction_output_fraction": {
+        "label":       "Predicted reply length fraction",
+        "description": "When a conversation has no reply history to average, predict the reply as this fraction of the maximum response length.",
+        "type":        "float",
+        "group":       "budget",
+        "min":         0.0,
+        "max":         1.0,
+    },
 
     # ── Local models (additional) ────────────────────────────────────────────
     "local_inference_timeout_sec": {
@@ -735,6 +841,39 @@ FIELD_METADATA: dict[str, dict] = {
         "description": "Default instructions prepended to every conversation.",
         "type":        "textarea",
         "group":       "chat",
+    },
+    "history_compaction_enabled": {
+        "label":       "History compaction",
+        "description": "When a conversation outgrows the context budget, summarize the oldest messages instead of dropping them, so early facts survive long chats.",
+        "type":        "bool",
+        "group":       "chat",
+    },
+    "history_compaction_keep_recent_msgs": {
+        "label":       "Recent messages kept verbatim",
+        "description": "How many of the newest messages stay un-summarized when compaction triggers. Counts messages, not turns — one turn is two messages (user + assistant).",
+        "type":        "int",
+        "group":       "chat",
+        "unit":        "messages",
+        "min":         2,
+        "max":         40,
+    },
+    "history_compaction_batch_msgs": {
+        "label":       "Compaction batch size",
+        "description": "Regenerate the rolling summary only after this many additional messages overflow. Batching keeps the cached history prefix stable between regenerations.",
+        "type":        "int",
+        "group":       "chat",
+        "unit":        "messages",
+        "min":         1,
+        "max":         40,
+    },
+    "history_compaction_max_summary_chars": {
+        "label":       "Summary length cap",
+        "description": "Hard ceiling on the rolling summary length; longer model output is truncated.",
+        "type":        "int",
+        "group":       "chat",
+        "unit":        "chars",
+        "min":         200,
+        "max":         20000,
     },
     "default_agent_id": {
         "label":       "Default agent",
@@ -882,6 +1021,60 @@ FIELD_METADATA: dict[str, dict] = {
         "unit":        "chars",
         "min":         0,
         "max":         1000,
+    },
+    "rag_top_k": {
+        "label":       "Chunks per turn",
+        "description": "How many knowledge chunks (and memories) are retrieved for each message.",
+        "type":        "int",
+        "group":       "rag",
+        "min":         1,
+        "max":         20,
+    },
+    "embedding_cache_enabled": {
+        "label":       "Embedding cache",
+        "description": "Reuse embeddings for text the app has already embedded, skipping the embedding model on repeats.",
+        "type":        "bool",
+        "group":       "rag",
+    },
+    "embedding_cache_max_rows": {
+        "label":       "Embedding cache size",
+        "description": "Maximum cached embeddings kept on disk; the least recently used are pruned beyond this.",
+        "type":        "int",
+        "group":       "rag",
+        "unit":        "entries",
+        "min":         100,
+        "max":         1000000,
+    },
+    "embedding_cache_memory_items": {
+        "label":       "Embedding cache (in memory)",
+        "description": "Embeddings held in RAM for instant reuse before falling back to the on-disk cache.",
+        "type":        "int",
+        "group":       "rag",
+        "unit":        "entries",
+        "min":         1,
+        "max":         100000,
+    },
+    "rag_mmr_enabled": {
+        "label":       "Diverse retrieval (MMR)",
+        "description": "Re-rank search results to avoid near-duplicate chunks crowding out distinct information.",
+        "type":        "bool",
+        "group":       "rag",
+    },
+    "rag_mmr_lambda": {
+        "label":       "MMR relevance weight",
+        "description": "Balance between relevance (1.0) and diversity (0.0) when diverse retrieval is on.",
+        "type":        "float",
+        "group":       "rag",
+        "min":         0.0,
+        "max":         1.0,
+    },
+    "rag_rrf_min_score": {
+        "label":       "Minimum fused score",
+        "description": "Drop hybrid-search results whose fused score falls below this (0 = keep all).",
+        "type":        "float",
+        "group":       "rag",
+        "min":         0.0,
+        "max":         0.05,
     },
 
     # ── Web research ──────────────────────────────────────────────────────────
@@ -1054,6 +1247,52 @@ FIELD_METADATA: dict[str, dict] = {
         "min":         0.0,
         "max":         1.0,
     },
+    "trajectory_consolidation_enabled": {
+        "label":       "Trajectory consolidation",
+        "description": "Periodically distil raw trajectories into compact routing hints (graded quality + support count) the router consults first.",
+        "type":        "bool",
+        "group":       "advanced",
+    },
+    "trajectory_consolidation_min_cluster": {
+        "label":       "Hint cluster size",
+        "description": "Minimum number of similar same-agent trajectories before they are consolidated into a routing hint.",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         2,
+        "max":         20,
+    },
+    "trajectory_consolidation_interval_turns": {
+        "label":       "Consolidation interval",
+        "description": "Run consolidation inline after this many trajectories have been recorded (the background indexer also runs it).",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         1,
+        "max":         500,
+    },
+    "trajectory_hint_max_age_days": {
+        "label":       "Hint max age (days)",
+        "description": "Routing hints not reinforced for this many days are pruned unless they reached the cluster-size support.",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         1,
+        "max":         3650,
+    },
+    "trajectory_hint_merge_sim": {
+        "label":       "Hint merge similarity",
+        "description": "Minimum vector similarity (0-1) for a new trajectory to merge into an existing routing hint (also the cluster threshold).",
+        "type":        "float",
+        "group":       "advanced",
+        "min":         0.0,
+        "max":         1.0,
+    },
+    "trajectory_hint_weight": {
+        "label":       "Hint bias strength",
+        "description": "How strongly a routing hint nudges the skill-match score (damped until support reaches 5).",
+        "type":        "float",
+        "group":       "advanced",
+        "min":         0.0,
+        "max":         1.0,
+    },
     "guidance_compiler_enabled": {
         "label":       "Guidance compiler",
         "description": "Inject only the project/role rules relevant to the current message instead of the whole rulebook.",
@@ -1110,6 +1349,28 @@ FIELD_METADATA: dict[str, dict] = {
         "description": "Enable user-defined multi-step workflows (DAGs) on top of the team pipeline.",
         "type":        "bool",
         "group":       "advanced",
+    },
+    "pipeline_parallel_enabled": {
+        "label":       "Parallel team pipeline",
+        "description": "Run independent team-pipeline steps concurrently. Local models (Ollama/LM Studio) are single-stream on one GPU, so the speedup comes from Claude- or LiteLLM-routed (or mixed-backend) steps.",
+        "type":        "bool",
+        "group":       "advanced",
+    },
+    "pipeline_max_concurrency": {
+        "label":       "Pipeline concurrency",
+        "description": "Maximum team-pipeline steps in flight at once when parallel execution is enabled.",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         1,
+        "max":         8,
+    },
+    "pipeline_local_concurrency": {
+        "label":       "Local-model pipeline concurrency",
+        "description": "Maximum concurrent pipeline calls to the local backend. Keep at 1 unless your local server batches requests — local inference is effectively single-stream on one GPU.",
+        "type":        "int",
+        "group":       "advanced",
+        "min":         1,
+        "max":         8,
     },
     "studio_mode": {
         "label":       "Studio mode",

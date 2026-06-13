@@ -33,12 +33,28 @@ v5.1 — Caching + streaming-thinking enhancements:
     thinking_delta / text_delta event types in messages.stream().
 """
 
+import copy
 from pathlib import Path
 from typing import Callable
 
 from anthropic import Anthropic
 
 from services.llm_interface import LLMClient
+
+
+def _cache_tokens(usage) -> tuple[int, int]:
+    """Read prompt-cache token counts off an Anthropic usage object.
+
+    Returns ``(cache_creation_tokens, cache_read_tokens)``. Defensive:
+    older SDK versions / models without caching simply lack the fields,
+    and the API may return None — both degrade to 0 so callers can add
+    the keys unconditionally (Phase 1 usage telemetry).
+    """
+    if usage is None:
+        return 0, 0
+    creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    return int(creation), int(read)
 
 
 class ClaudeClient(LLMClient):
@@ -54,10 +70,15 @@ class ClaudeClient(LLMClient):
       - Extended thinking chat
     """
 
-    def __init__(self, api_key: str, model: str, use_caching: bool = True):
+    def __init__(self, api_key: str, model: str, use_caching: bool = True,
+                 use_history_caching: bool = False):
         self._client = Anthropic(api_key=api_key)
         self._model = model
         self._use_caching = use_caching
+        # Perf Phase 3a (claude_history_caching setting, default off): add a
+        # second cache breakpoint at the stable end of the previous turn so
+        # the re-sent conversation history is billed at the cache-read rate.
+        self._use_history_caching = use_history_caching
         self._file_cache: dict[str, str] = {}  # file_path -> file_id
 
     # ── Configuration ────────────────────────────────────────────────────────────
@@ -67,6 +88,7 @@ class ClaudeClient(LLMClient):
         api_key: str | None = None,
         model: str | None = None,
         use_caching: bool | None = None,
+        use_history_caching: bool | None = None,
     ) -> None:
         if api_key is not None and api_key != getattr(self._client, "api_key", None):
             self._client = Anthropic(api_key=api_key)
@@ -74,6 +96,8 @@ class ClaudeClient(LLMClient):
             self._model = model
         if use_caching is not None:
             self._use_caching = use_caching
+        if use_history_caching is not None:
+            self._use_history_caching = use_history_caching
 
     # ── Content helpers ──────────────────────────────────────────────────────────
 
@@ -118,6 +142,72 @@ class ClaudeClient(LLMClient):
         if self._use_caching and system:
             return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
         return system
+
+    def _apply_history_cache(self, messages: list) -> list:
+        """Place ONE cache breakpoint at the stable end of the previous turn.
+
+        Perf Phase 3a. The marked block is the LAST assistant message before
+        the final user message — i.e. the point in the history that was
+        byte-identical in the previous request — so consecutive turns within
+        the 5-minute cache window read the whole prior conversation back at
+        0.1× instead of re-paying full input price for it every turn.
+
+        Breakpoint budget: the API allows at most 4 cache_control markers per
+        request; this method adds exactly 1, on top of the 1 the system prompt
+        uses via _build_system_with_cache (2 of 4 — asserted in tests, not at
+        runtime). Strict byte-prefix matching means the marker is only worth
+        anything when the earlier bytes are stable between turns — that is
+        what Phase 3b's batched history compaction guarantees. Prefixes below
+        the model's minimum cacheable size (2048 tokens on claude-sonnet-4-6)
+        are silently ignored by the API, so short conversations degrade
+        safely to uncached input.
+
+        Flag off (``claude_history_caching``, default): returns ``messages``
+        UNTOUCHED — the same object — so flag-off requests stay byte-identical
+        to pre-Phase-3 behavior. Flag on: returns a deep copy with the marked
+        message's string content converted to a single text block carrying
+        ``cache_control``; block-list content (vision) gets the marker
+        appended to its LAST block instead of being wrapped. When there is no
+        assistant message before the final user message (first turn), or the
+        target content is empty/unrecognized, the input is returned unchanged.
+        """
+        if not self._use_history_caching or not messages:
+            return messages
+
+        last_user = None
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], dict) and messages[i].get("role") == "user":
+                last_user = i
+                break
+        if last_user is None:
+            return messages
+
+        target = None
+        for i in range(last_user - 1, -1, -1):
+            if isinstance(messages[i], dict) and messages[i].get("role") == "assistant":
+                target = i
+                break
+        if target is None:
+            return messages
+
+        content = messages[target].get("content")
+        if isinstance(content, str):
+            if not content:
+                return messages  # the API rejects empty text blocks
+        elif not (isinstance(content, list) and content
+                  and isinstance(content[-1], dict)):
+            return messages
+
+        marked = copy.deepcopy(messages)
+        if isinstance(content, str):
+            marked[target]["content"] = [{
+                "type": "text",
+                "text": content,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        else:
+            marked[target]["content"][-1]["cache_control"] = {"type": "ephemeral"}
+        return marked
 
     # ── Single-turn chat ─────────────────────────────────────────────────────────
 
@@ -181,13 +271,18 @@ class ClaudeClient(LLMClient):
             "model": self._model,
             "max_tokens": max_tokens,
             "system": self._build_system_with_cache(system),
-            "messages": messages,
+            "messages": self._apply_history_cache(messages),
         }
         response = self._client.messages.create(**kwargs)
+        cache_creation, cache_read = _cache_tokens(response.usage)
         return {
             "text": response.content[0].text,
             "input_tokens": response.usage.input_tokens,
             "output_tokens": response.usage.output_tokens,
+            # Phase 1 telemetry: prompt-cache hit/miss accounting. Purely
+            # additive — existing keys/callers are unchanged.
+            "cache_creation_tokens": cache_creation,
+            "cache_read_tokens": cache_read,
         }
 
     def stream_multi_turn(
@@ -215,7 +310,7 @@ class ClaudeClient(LLMClient):
             "model": self._model,
             "max_tokens": max_tokens,
             "system": self._build_system_with_cache(system),
-            "messages": messages,
+            "messages": self._apply_history_cache(messages),
         }
         full_text = ""
         usage = None
@@ -237,14 +332,19 @@ class ClaudeClient(LLMClient):
             "text": result.get("text", ""),
             "input_tokens": int(result.get("input_tokens", 0)),
             "output_tokens": int(result.get("output_tokens", 0)),
+            "cache_creation_tokens": int(result.get("cache_creation_tokens", 0) or 0),
+            "cache_read_tokens": int(result.get("cache_read_tokens", 0) or 0),
         }
 
     def stream_unified(self, system, messages, on_token, max_tokens=4096):
         text, usage = self.stream_multi_turn(system, messages, on_token, max_tokens=max_tokens)
+        cache_creation, cache_read = _cache_tokens(usage)
         return {
             "text": text or "",
             "input_tokens": (getattr(usage, "input_tokens", 0) or 0) if usage else 0,
             "output_tokens": (getattr(usage, "output_tokens", 0) or 0) if usage else 0,
+            "cache_creation_tokens": cache_creation,
+            "cache_read_tokens": cache_read,
         }
 
     def is_available(self) -> bool:
@@ -252,6 +352,29 @@ class ClaudeClient(LLMClient):
 
     def client_name(self) -> str:
         return self._model
+
+    # ── Token counting (Perf Phase 4) ────────────────────────────────────────────
+
+    def count_tokens(self, system: str, messages: list,
+                     model: str | None = None, timeout: float = 10.0) -> int:
+        """Exact pre-send input-token count via POST /v1/messages/count_tokens.
+
+        Thin wrapper used by services/cost_predictor.py when the
+        ``cost_prediction_use_api_count`` setting is on. ``with_options``
+        applies a short per-call timeout so a slow count can't stall the
+        turn for long; any failure propagates to the caller (the predictor
+        catches it and falls back to its chars//4 heuristic).
+        """
+        kwargs: dict = {
+            "model": model or self._model,
+            "messages": messages,
+        }
+        if system:
+            kwargs["system"] = system
+        response = self._client.with_options(timeout=timeout).messages.count_tokens(
+            **kwargs,
+        )
+        return int(response.input_tokens)
 
     # ── Tool use (agentic loop) ──────────────────────────────────────────────────
 
@@ -273,7 +396,7 @@ class ClaudeClient(LLMClient):
             "model": self._model,
             "max_tokens": max_tokens,
             "system": self._build_system_with_cache(system),
-            "messages": messages,
+            "messages": self._apply_history_cache(messages),
             "tools": tools,
         }
         response = self._client.messages.create(**kwargs)
@@ -288,12 +411,15 @@ class ClaudeClient(LLMClient):
                     "name": block.name,
                     "input": block.input,
                 })
+        cache_creation, cache_read = _cache_tokens(response.usage)
         return {
             "content": content,
             "stop_reason": response.stop_reason,
             "usage": {
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
+                "cache_creation_tokens": cache_creation,
+                "cache_read_tokens": cache_read,
             },
         }
 

@@ -198,6 +198,32 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             "ON trajectories(embedding_status)"
         )
 
+        # ── Perf Phase 6: consolidated routing hints ──────────────────────────
+        # One row per (task-family exemplar × agent × backend) distilled from
+        # ≥ trajectory_consolidation_min_cluster similar trajectories (or by
+        # merging later trajectories into an existing hint). ``quality`` is the
+        # support-weighted running mean of the members' graded quality scores;
+        # ``exemplar_text`` is the cluster medoid's task text and is what gets
+        # embedded into vec_routing_hints. services/trajectory_store.py owns
+        # all reads/writes (consolidate / hint_table / pruning).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS routing_hints (
+                id            TEXT PRIMARY KEY,
+                exemplar_text TEXT NOT NULL,
+                agent_id      TEXT,
+                backend       TEXT,
+                skill         TEXT,
+                quality       REAL NOT NULL,
+                support_count INTEGER NOT NULL,
+                created_at    TEXT,
+                last_seen     TEXT
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_routing_hints_agent "
+            "ON routing_hints(agent_id, backend)"
+        )
+
         # ── Guidance / Constitution compiler: rule shards ─────────────────────
         # Project/role rules split into discrete shards, embedded so only the
         # rules relevant to the current message are injected into the system
@@ -466,6 +492,47 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_bm25_updated ON bm25_corpus(updated_at)"
         )
 
+        # ── Perf Phase 2: embedding cache ─────────────────────────────────────
+        # Content-hash keyed vectors so repeated queries/chunks skip the real
+        # embedder (services/embedding_cache.py). ``vector`` is a packed
+        # float32 BLOB (array('f') — same layout as the vec0 tables but
+        # symmetric, so it can be read back). Pruned oldest-first by
+        # last_used beyond the embedding_cache_max_rows setting.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS embedding_cache (
+                content_hash TEXT PRIMARY KEY,
+                model        TEXT NOT NULL,
+                vector       BLOB NOT NULL,
+                dim          INTEGER NOT NULL,
+                created_at   TEXT,
+                last_used    TEXT
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_embedding_cache_last_used "
+            "ON embedding_cache(last_used)"
+        )
+
+        # ── Perf Phase 3: rolling history compaction ──────────────────────────
+        # One live row per conversation: the rolling summary of every message
+        # BEFORE covers_through_message_count (a count over the conversation's
+        # user/assistant rows in ``messages`` — messages carry no stable index
+        # at the trim site, so count anchoring is the identity scheme).
+        # services/history_compactor.py owns reads, batched regeneration, and
+        # the single-row replace; the row is intentionally NOT a history of
+        # summaries — replacing in place keeps lookups O(1).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_summaries (
+                conversation_id              TEXT PRIMARY KEY,
+                covers_through_message_count INTEGER NOT NULL,
+                source_message_count         INTEGER,
+                summary_text                 TEXT NOT NULL,
+                model_used                   TEXT,
+                created_at                   TEXT,
+                updated_at                   TEXT
+            )
+        """)
+
         # ── Priority 3: Handoff log ───────────────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS handoff_log (
@@ -652,6 +719,12 @@ def _create_schema(conn: sqlite3.Connection) -> None:
                 rule_id TEXT UNIQUE NOT NULL
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vec_routing_hints_map (
+                vec_rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                hint_id TEXT UNIQUE NOT NULL
+            )
+        """)
         try:
             cur.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS vec_documents USING vec0(
@@ -670,6 +743,11 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             """)
             cur.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS vec_guidance USING vec0(
+                    embedding float[384]
+                )
+            """)
+            cur.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS vec_routing_hints USING vec0(
                     embedding float[384]
                 )
             """)
@@ -1091,6 +1169,80 @@ _MIGRATIONS = [
             created_at    TEXT NOT NULL
         )""",
         "CREATE INDEX IF NOT EXISTS idx_design_artifacts_created ON design_artifacts(created_at)",
+    ]),
+
+    # ── Perf Phase 1: prompt-cache + cost-prediction telemetry ───────────────
+    # cache_read_tokens / cache_creation_tokens record Anthropic prompt-cache
+    # usage per turn (previously discarded by claude_client). predicted_cost_usd
+    # is reserved for the Phase 4 pre-turn cost predictor — added now so the
+    # token_usage migration list changes once. Existing rows keep the defaults.
+    ("perf_phase1.cache_telemetry", [
+        "ALTER TABLE token_usage ADD COLUMN cache_read_tokens INTEGER DEFAULT 0",
+        "ALTER TABLE token_usage ADD COLUMN cache_creation_tokens INTEGER DEFAULT 0",
+        "ALTER TABLE token_usage ADD COLUMN predicted_cost_usd REAL",
+    ]),
+
+    # ── Perf Phase 2: embedding cache table ───────────────────────────────────
+    # Also created by CREATE TABLE IF NOT EXISTS in _create_schema (new
+    # installs); the idempotent statements are repeated here so existing
+    # installs that skip schema creation still gain the table.
+    ("perf_phase2.embedding_cache", [
+        """CREATE TABLE IF NOT EXISTS embedding_cache (
+            content_hash TEXT PRIMARY KEY,
+            model        TEXT NOT NULL,
+            vector       BLOB NOT NULL,
+            dim          INTEGER NOT NULL,
+            created_at   TEXT,
+            last_used    TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_embedding_cache_last_used "
+        "ON embedding_cache(last_used)",
+    ]),
+
+    # ── Perf Phase 3: rolling history compaction summaries ───────────────────
+    # Also created by CREATE TABLE IF NOT EXISTS in _create_schema (new
+    # installs); repeated here so existing installs gain the table too.
+    ("perf_phase3.conversation_summaries", [
+        """CREATE TABLE IF NOT EXISTS conversation_summaries (
+            conversation_id              TEXT PRIMARY KEY,
+            covers_through_message_count INTEGER NOT NULL,
+            source_message_count         INTEGER,
+            summary_text                 TEXT NOT NULL,
+            model_used                   TEXT,
+            created_at                   TEXT,
+            updated_at                   TEXT
+        )""",
+    ]),
+
+    # ── Perf Phase 6: trajectory learning v2 (graded verdicts + hints) ───────
+    # quality_score is the graded [0,1] verdict written by
+    # trajectory_store.record() and lazily backfilled on read for legacy
+    # rows (NULL = not yet computed). consolidated marks rows already
+    # distilled into routing_hints; their vec_trajectories rows are dropped
+    # (the trajectories row stays for audit). The plain tables are repeated
+    # from _create_schema so existing installs gain them too; the
+    # vec_routing_hints vec0 virtual table is created in _create_schema's
+    # try-block alongside the other vec0 tables.
+    ("perf_phase6.trajectory_v2", [
+        "ALTER TABLE trajectories ADD COLUMN quality_score REAL",
+        "ALTER TABLE trajectories ADD COLUMN consolidated INTEGER DEFAULT 0",
+        """CREATE TABLE IF NOT EXISTS routing_hints (
+            id            TEXT PRIMARY KEY,
+            exemplar_text TEXT NOT NULL,
+            agent_id      TEXT,
+            backend       TEXT,
+            skill         TEXT,
+            quality       REAL NOT NULL,
+            support_count INTEGER NOT NULL,
+            created_at    TEXT,
+            last_seen     TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_routing_hints_agent "
+        "ON routing_hints(agent_id, backend)",
+        """CREATE TABLE IF NOT EXISTS vec_routing_hints_map (
+            vec_rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            hint_id TEXT UNIQUE NOT NULL
+        )""",
     ]),
 ]
 

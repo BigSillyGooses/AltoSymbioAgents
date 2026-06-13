@@ -130,6 +130,48 @@ def _estimate_cost(model: str, tokens_in: int, tokens_out: int,
     return (tokens_in * price_in + tokens_out * price_out) / 1_000_000
 
 
+# Anthropic prompt-cache billing multipliers (relative to the input price):
+# cache reads bill at 0.1×, cache writes (creation) at 1.25×. Source: the
+# Anthropic prompt-caching pricing docs; same numbers the Phase 1 plan cites.
+_CACHE_READ_PRICE_MULT = 0.1
+_CACHE_WRITE_PRICE_MULT = 1.25
+
+
+def _estimate_cost_cached(model: str, tokens_in: int, tokens_out: int,
+                          cache_read_tokens: int, cache_creation_tokens: int,
+                          settings=None) -> float:
+    """Cache-aware variant of ``_estimate_cost`` (Perf Phase 1).
+
+    Used ONLY when the turn reported non-zero prompt-cache token counts —
+    callers with both fields at 0 take the plain ``_estimate_cost`` path so
+    pre-existing behavior stays byte-identical. ``tokens_in`` is the
+    *uncached* portion of the input (the API's ``input_tokens`` already
+    excludes cached tokens); cached reads/writes are billed at their
+    Anthropic multipliers on the same per-model input price.
+    """
+    if not model or "claude" not in model.lower():
+        return 0.0
+
+    from core.model_catalog import get_catalog
+
+    user_overrides: dict[str, tuple[float, float]] | None = None
+    if settings:
+        custom = settings.get("model_prices", None)
+        if custom and isinstance(custom, dict):
+            user_overrides = {}
+            for key, val in custom.items():
+                if isinstance(val, (list, tuple)) and len(val) == 2:
+                    user_overrides[key] = (float(val[0]), float(val[1]))
+
+    price_in, price_out = get_catalog().prices_for_model(model, user_overrides)
+    return (
+        tokens_in * price_in
+        + cache_read_tokens * price_in * _CACHE_READ_PRICE_MULT
+        + cache_creation_tokens * price_in * _CACHE_WRITE_PRICE_MULT
+        + tokens_out * price_out
+    ) / 1_000_000
+
+
 def _log_router_event(
     conversation_id: str,
     message_preview: str,
@@ -591,6 +633,34 @@ class ChatOrchestrator:
                  len(messages), len(trimmed), total,
                  sum(len(m.get("content", "")) for m in trimmed), budget_chars)
         return trimmed
+
+    def _compact_or_trim(self, conversation_id: str, messages: list) -> list:
+        """Fit the history into the context budget (Perf Phase 3b).
+
+        Flag off (``history_compaction_enabled``, default) this is exactly the
+        legacy ``_trim_history_to_budget`` call, so flag-off turns stay
+        byte-identical. Flag on, overflowing messages are folded into the
+        conversation's persisted rolling summary instead of being dropped —
+        see services/history_compactor.py. Compaction is best-effort: ANY
+        exception falls back to the legacy trim so a summarizer failure can
+        never break a chat turn.
+        """
+        if self._settings.get("history_compaction_enabled", False):
+            try:
+                from services import history_compactor
+                return history_compactor.compact(
+                    conversation_id=conversation_id,
+                    messages=messages,
+                    budget_chars=MAX_CONTEXT_CHARS,
+                    settings=self._settings,
+                    local_client=self.local,
+                    claude_client=self.claude,
+                )
+            except Exception as exc:  # noqa: BLE001 — fall back, never break a turn
+                log.warning(
+                    "History compaction failed (%s); falling back to trim", exc,
+                )
+        return self._trim_history_to_budget(messages)
 
     # ── PR 8: file attachments ───────────────────────────────────────────────
 
@@ -1325,8 +1395,8 @@ class ChatOrchestrator:
             for r in reversed(history_rows)
         ]
 
-        # ── Fix 7: Token-aware trimming ──────────────────────────────────────
-        messages = self._trim_history_to_budget(messages)
+        # ── Fix 7: Token-aware trimming (Phase 3b: compaction when enabled) ──
+        messages = self._compact_or_trim(conversation_id, messages)
 
         # ── PR 8: ephemeral attachment context ───────────────────────────────
         # Attachments dropped onto the chat input live in their own table —
@@ -1547,6 +1617,65 @@ class ChatOrchestrator:
                     message_id=str(uuid.uuid4()),
                 )
 
+        # ── Perf Phase 4: pre-turn cost prediction ───────────────────────────
+        # Runs AFTER the prompt is final (post-trim, post-security-gate,
+        # post-governance — full_system and messages are exactly what the
+        # worker dispatch below will send) and BEFORE any model call. Flag
+        # off (``cost_prediction_enabled``, default): nothing runs, the turn
+        # stays byte-identical, and ``predicted_cost`` rides to close() as
+        # None → SQL NULL. Prediction is best-effort: a predictor failure
+        # can never break a turn, and the optional over-budget guard only
+        # fires on a successful prediction.
+        predicted_cost: float | None = None
+        if self._settings.get("cost_prediction_enabled", False):
+            try:
+                from services import cost_predictor
+                prediction = cost_predictor.predict(
+                    full_system, messages, target.model_name, self._settings,
+                    claude_client=self.claude,
+                    conversation_id=conversation_id,
+                )
+                predicted_cost = prediction.est_cost_usd
+                _emit_event("cost_predicted", {
+                    "conversation_id": conversation_id,
+                    "est_cost_usd": prediction.est_cost_usd,
+                    "est_input_tokens": prediction.est_input_tokens,
+                    "est_cached_tokens": prediction.est_cached_tokens,
+                    "est_output_tokens": prediction.est_output_tokens,
+                    "method": prediction.method,
+                })
+            except Exception as exc:
+                log.debug("cost prediction skipped: %s", exc)
+            if (
+                predicted_cost is not None
+                and self._settings.get("cost_prediction_block_over_budget", False)
+                and budget > 0
+                and spent + predicted_cost > budget
+            ):
+                # Same ChatResult shape as the budget_exceeded short-circuit
+                # at the top of send(). One asymmetry, mirrored deliberately:
+                # the pre-turn budget path bails inside TurnLifecycle.open()
+                # BEFORE the user-message INSERT, while this guard runs after
+                # open() — so the user message is already persisted and stays
+                # (like every other post-open short-circuit: security_abort,
+                # governance_blocked, escalation_pending). No assistant
+                # message or token_usage row is written for the blocked turn.
+                return ChatResult(
+                    text=(
+                        f"⚠️ This message is predicted to cost "
+                        f"${predicted_cost:.2f}, which would exceed the "
+                        f"${budget:.2f} conversation budget "
+                        f"(${spent:.2f} spent so far). Start a new "
+                        f"conversation or increase the limit in Settings."
+                    ),
+                    model="",
+                    route_reason="budget_predicted_exceeded",
+                    tokens_in=0,
+                    tokens_out=0,
+                    cost_usd=0.0,
+                    message_id=str(uuid.uuid4()),
+                )
+
         # ── Phase 6 split flag (computed early — Phase 8 voting needs it) ────
         split_enabled = bool(
             self._settings.get("reader_actor_split_enabled", False)
@@ -1609,6 +1738,12 @@ class ChatOrchestrator:
         response_text = ""
         tokens_in = 0
         tokens_out = 0
+        # Perf Phase 1: prompt-cache accounting for this turn. Only the
+        # monolithic worker dispatch below populates these today; every
+        # other path (voting, split, CaMeL, vision) leaves them at 0,
+        # which keeps the cost math on those paths byte-identical.
+        cache_read_tokens = 0
+        cache_creation_tokens = 0
         model_name = target.model_name
         had_error = False
 
@@ -1898,6 +2033,8 @@ class ChatOrchestrator:
                 response_text = worker_result.text
                 tokens_in = worker_result.input_tokens
                 tokens_out = worker_result.output_tokens
+                cache_read_tokens = worker_result.cache_read_tokens
+                cache_creation_tokens = worker_result.cache_creation_tokens
                 if worker_result.had_error:
                     had_error = True
                 # QLPT Stage 1: hand the worker's per-token logprobs to
@@ -2026,7 +2163,17 @@ class ChatOrchestrator:
         # Phase 8: asst_msg_id was pre-allocated above so the
         # high_stakes_voting_complete event could carry it for the
         # frontend badge; reuse the same id when persisting.
-        cost = _estimate_cost(model_name, tokens_in, tokens_out, self._settings)
+        # Perf Phase 1: when the turn reported prompt-cache activity, bill the
+        # cached portions at their Anthropic multipliers. Turns with zero cache
+        # counts (local models, voting/split paths) take the original cost
+        # path unchanged.
+        if cache_read_tokens or cache_creation_tokens:
+            cost = _estimate_cost_cached(
+                model_name, tokens_in, tokens_out,
+                cache_read_tokens, cache_creation_tokens, self._settings,
+            )
+        else:
+            cost = _estimate_cost(model_name, tokens_in, tokens_out, self._settings)
         close_result = self._turn_lifecycle.close(
             ctx,
             asst_msg_id=asst_msg_id,
@@ -2036,6 +2183,11 @@ class ChatOrchestrator:
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             cost=cost,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            # Perf Phase 4: None unless cost_prediction_enabled produced an
+            # estimate above — None writes SQL NULL, the pre-Phase-4 value.
+            predicted_cost_usd=predicted_cost,
         )
         budget_warning = close_result.budget_warning
         self._turn_lifecycle.maybe_auto_title(ctx, response_text)
@@ -2115,7 +2267,7 @@ class ChatOrchestrator:
             {"role": r["role"], "content": r["content"]}
             for r in reversed(history_rows)
         ]
-        history = self._trim_history_to_budget(history)
+        history = self._compact_or_trim(conversation_id, history)
 
         # Web research auto-fetch (mirrors the solo path): index any URL the
         # user mentioned before the team runs, so the freshly-added page is

@@ -1,0 +1,72 @@
+{
+  "_comment": "Gates for benchmarks/perf/run_perf.py. Two classes: 'deterministic' metrics are identical on every run by construction (fixture tokenizer, scripted replies, seeded fixtures) so the ceilings are tight; 'latency' metrics vary with the host, so the ceilings are generous absolute ms bounds meant to catch order-of-magnitude regressions, not noise. Baseline snapshot: benchmarks/perf_baseline.json.",
+  "deterministic": {
+    "chat_short": {
+      "_comment": "Phase 4: prediction_mape is the mean abs pct error of predicted vs actual TOTAL input tokens (input + cache read + cache creation). The fixture tokenizer is also chars//4, so this gates PLUMBING correctness (the predictor saw the same final prompt the worker received), NOT real-world accuracy; the generous 5-point ceiling absorbs the role-label/separator noise the heuristic ignores. Measured at gate-setting time: 0.5089.",
+      "tokens_in_per_turn": { "max": 250 },
+      "tokens_out_per_turn": { "max": 90 },
+      "cache_hit_rate": { "min": 0.85 },
+      "cost_per_turn_usd": { "max": 0.005 },
+      "turn_count": { "min": 5, "max": 5 },
+      "prediction_mape": { "max": 5 }
+    },
+    "chat_long": {
+      "_comment": "Phase 3 headline. The billed-input ceiling for the both-flags config is precomputed as 65% of the measured flags-off run (58262.30 billed tokens -> ceiling 37870), i.e. the gate fails unless both-on stays at least 35% cheaper than off. Measured at gate-setting time: both = 24283.50 (58.3% reduction). summary_regenerations asserts batched (not per-turn) summary refresh — 7 regenerations across ~18 over-budget turns at gate-setting time.",
+      "configs.off.turn_count": { "min": 30, "max": 30 },
+      "configs.caching.turn_count": { "min": 30, "max": 30 },
+      "configs.compaction.turn_count": { "min": 30, "max": 30 },
+      "configs.both.turn_count": { "min": 30, "max": 30 },
+      "configs.both.billed_input_tokens": { "max": 37870 },
+      "billed_reduction_pct_both": { "min": 35 },
+      "configs.both.cache_hit_rate": { "min": 0.8 },
+      "configs.both.summary_regenerations": { "min": 1, "max": 10 },
+      "configs.off.summary_regenerations": { "min": 0, "max": 0 }
+    },
+    "rag_heavy": {
+      "queries_with_results": { "min": 50 },
+      "results_per_query": { "min": 5.0 },
+      "fused_from_both": { "min": 250 },
+      "chunks_ingested": { "min": 2000, "max": 2000 }
+    },
+    "team_pipeline": {
+      "_comment": "Phase 5. tokens_identical (1/0) asserts parallelism does not change spend — sequential and parallel runs of the same 6-step fixture must bill the same tokens (the fixture makes per-step prompts byte-identical across modes; see run_team_pipeline's docstring). Step counts are exact: the plan has 6 subtasks and every step must validate in both modes. The wall-clock ratio gate lives in the latency class.",
+      "tokens_identical": { "min": 1 },
+      "sequential.steps": { "min": 6, "max": 6 },
+      "parallel.steps": { "min": 6, "max": 6 },
+      "sequential.validation_passed_steps": { "min": 6, "max": 6 },
+      "parallel.validation_passed_steps": { "min": 6, "max": 6 },
+      "sequential.specialist_calls": { "min": 6, "max": 6 },
+      "parallel.specialist_calls": { "min": 6, "max": 6 }
+    },
+    "routing": {
+      "_comment": "Phase 6. hints_created asserts consolidation produced hints from the 200 seeded trajectories (36 at gate-setting time). The two regret booleans (1/0) encode the guidance-ordering requirement hints <= raw <= none over the 100 decisions; measured at gate-setting time: hints 0.00, raw 0.03, none 0.75.",
+      "decision_count": { "min": 100, "max": 100 },
+      "similar_hits": { "min": 300 },
+      "bias_tables_nonempty": { "min": 100 },
+      "hints_created": { "min": 1 },
+      "regret_hints_le_raw": { "min": 1 },
+      "regret_raw_le_none": { "min": 1 }
+    }
+  },
+  "latency": {
+    "chat_short": {
+      "spans.retrieval_total.avg_ms": { "max": 50 },
+      "spans.model_call.avg_ms": { "max": 50 }
+    },
+    "rag_heavy": {
+      "spans.vec_search.avg_ms": { "max": 100 },
+      "spans.bm25.avg_ms": { "max": 100 },
+      "spans.embed.avg_ms": { "max": 25 },
+      "spans.rrf.avg_ms": { "max": 10 }
+    },
+    "routing": {
+      "spans.traj_find_similar.avg_ms": { "max": 50 },
+      "spans.traj_bias_table.avg_ms": { "max": 50 },
+      "spans.traj_hint_table.avg_ms": { "max": 50 }
+    },
+    "team_pipeline": {
+      "_comment": "Phase 5 headline. With 4 independent steps at concurrency 3 plus a 2-step dependent chain (simulated 500 ms claude calls, 300 ms local decomposition/synthesis) the ideal ratio is ~0.58; the 0.7 ceiling absorbs scheduler/runner overhead while still failing if parallelism stops delivering. Measured at gate-setting time: 0.589.",
+      "parallel_over_sequential_ratio": { "max": 0.7 }
+    }
+  }
+}

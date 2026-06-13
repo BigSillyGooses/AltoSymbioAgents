@@ -11,7 +11,13 @@ GET /api/usage/summary?days=30&group_by=day|model|agent
   the zero-shaped payload rather than failing the whole endpoint, so a
   sparse install still renders an empty panel rather than a 500.
 
-Pure read aggregation — never mutates the underlying table.
+POST /api/usage/predict  (Perf Phase 4)
+  Approximate pre-send cost prediction for the UI's "this turn ≈ $0.04"
+  hint. Delegates to the ``core/api`` facade (UsageAPI.usage_predict);
+  works regardless of the ``cost_prediction_enabled`` flag because the
+  call itself is an explicit request for an estimate.
+
+Pure reads — never mutates the underlying tables.
 """
 
 from __future__ import annotations
@@ -21,9 +27,12 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Literal, get_args
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
 
 import db as _db
+
+from ._helpers import get_api
 
 router = APIRouter()
 log = logging.getLogger("usage_routes")
@@ -255,3 +264,14 @@ async def summary(days: int = 30, group_by: str = "day") -> dict:
         "by_model":    _by_model_top(cutoff),
         "by_agent":    _by_agent_top(cutoff),
     }
+
+
+class PredictIn(BaseModel):
+    conversation_id: str | None = None
+    message: str
+
+
+@router.post("/predict")
+async def predict(body: PredictIn, request: Request) -> dict:
+    """Approximate cost prediction for a message before it is sent."""
+    return get_api(request).usage_predict(body.conversation_id, body.message)

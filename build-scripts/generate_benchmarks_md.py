@@ -77,6 +77,10 @@ def main(argv: list[str] | None = None) -> int:
             "asr": _fmt_pct(data.get("asr")),
             "targeted_asr": _fmt_pct(data.get("targeted_asr")),
             "baseline": _baseline_for(thresholds, suite),
+            # Phase 7 efficiency overlay — absent on older results.json
+            # shapes; _render_efficiency() renders nothing in that case so
+            # pre-Phase-7 output stays byte-identical.
+            "perf": data.get("perf"),
         })
         # The methodology block uses the first non-empty record we see —
         # all four suites are run in the same workflow against the same
@@ -90,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             }
 
     out_path = Path(args.output).resolve()
-    out_path.write_text(_render(rows, methodology_seen))
+    out_path.write_text(_render(rows, methodology_seen, _render_efficiency(rows)))
     sys.stdout.write(f"Wrote {out_path}\n")
     return 0
 
@@ -119,11 +123,109 @@ def _load_thresholds(path: Path) -> dict:
         return {}
 
 
-def _render(rows: list[dict[str, Any]], methodology: dict[str, Any]) -> str:
+# ── Efficiency overlay (Phase 7) ──────────────────────────────────────────────
+
+
+def _fmt_count(val: Any) -> str:
+    if val is None:
+        return "—"
+    try:
+        return f"{float(val):,.0f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_cost(val: Any) -> str:
+    if val is None:
+        return "—"
+    try:
+        return f"${float(val):.4f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_rate(val: Any) -> str:
+    if val is None:
+        return "—"
+    try:
+        return f"{float(val) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_secs(val: Any) -> str:
+    if val is None:
+        return "—"
+    try:
+        return f"{float(val):.1f}s"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _render_efficiency(rows: list[dict[str, Any]]) -> str:
+    """Render the "Efficiency (same runs)" section, or "" when no suite has
+    the Phase 7 ``perf`` block (pre-Phase-7 results.json shapes), so older
+    inputs produce byte-identical output.
+
+    Informational only — no thresholds gate on these numbers. Suites whose
+    results.json predates the overlay render as `—` placeholders alongside
+    the suites that do carry it.
+    """
+    perf_rows = [r for r in rows if isinstance(r.get("perf"), dict)]
+    if not perf_rows:
+        return ""
+
+    md = (
+        "## Efficiency (same runs)\n\n"
+        "Per-task efficiency observed during the security runs above — the "
+        "same (user_task × injection_task) pairs, not a separate workload. "
+        "Tokens/task counts input + output tokens; cache hit rate is prompt-"
+        "cache reads over total prompt tokens (uncached input + cache reads "
+        "+ cache writes). Informational — no CI threshold gates on these "
+        "numbers.\n\n"
+        "| Suite | Tokens/task | Cost/task | Cache hit rate | "
+        "Wall-clock/task |\n"
+        "| --- | --- | --- | --- | --- |\n"
+    )
+    body_rows = []
+    for r in rows:
+        perf = r.get("perf")
+        if isinstance(perf, dict):
+            means = perf.get("means") or {}
+            body_rows.append(
+                f"| {r['suite']} | {_fmt_count(means.get('tokens_per_task'))} | "
+                f"{_fmt_cost(means.get('cost_usd_per_task'))} | "
+                f"{_fmt_rate(perf.get('cache_hit_rate'))} | "
+                f"{_fmt_secs(means.get('wall_clock_s_per_task'))} |"
+            )
+        else:
+            body_rows.append(f"| {r['suite']} | — | — | — | — |")
+    md += "\n".join(body_rows) + "\n\n"
+
+    first = perf_rows[0]["perf"]
+    flags = first.get("enabled_flags") or []
+    md += (
+        f"Perf config: `{first.get('config_name', 'default')}` — enabled "
+        f"flags: {', '.join(f'`{f}`' for f in flags) if flags else '(none)'}. "
+        "Run the same suite twice with different `--perf-config` / "
+        "`--enable-flags` values to compare configurations head-to-head.\n\n"
+    )
+    return md
+
+
+def _render(
+    rows: list[dict[str, Any]],
+    methodology: dict[str, Any],
+    efficiency_md: str = "",
+) -> str:
     """Render the final markdown document.
 
     Headers:
       Suite | Tasks | Utility | ASR | Targeted ASR | Baseline ASR (Hackett 2025)
+
+    ``efficiency_md`` (Phase 7) is the pre-rendered "Efficiency (same runs)"
+    section, inserted between the results table and the methodology block;
+    the empty-string default keeps pre-Phase-7 output byte-identical.
     """
     header = (
         "# Security Benchmarks — AgentDojo\n\n"
@@ -187,7 +289,7 @@ def _render(rows: list[dict[str, Any]], methodology: dict[str, Any]) -> str:
         "On Windows, `dev\\run-bench.bat` chains the install + all four "
         "suites + the regeneration of this file.\n"
     )
-    return header + body + methodology_md
+    return header + body + efficiency_md + methodology_md
 
 
 if __name__ == "__main__":  # pragma: no cover — CLI entry

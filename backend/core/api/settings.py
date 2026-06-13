@@ -87,12 +87,16 @@ class SettingsAPI(BaseAPI):
 
     def set_setting(self, key: str, value: Any) -> dict:
         self._settings.set(key, value)
-        _claude_keys = {"claude_api_key", "claude_model", "claude_prompt_caching"}
+        _claude_keys = {
+            "claude_api_key", "claude_model", "claude_prompt_caching",
+            "claude_history_caching",
+        }
         if key in _claude_keys:
             self._claude.update_config(
                 api_key=self._settings.get("claude_api_key", "") if key == "claude_api_key" else None,
                 model=self._settings.get("claude_model") if key == "claude_model" else None,
                 use_caching=self._settings.get("claude_prompt_caching") if key == "claude_prompt_caching" else None,
+                use_history_caching=self._settings.get("claude_history_caching") if key == "claude_history_caching" else None,
             )
         if key in ("routing_enabled", "smart_routing_enabled"):
             self._settings.set("routing_enabled", bool(value))

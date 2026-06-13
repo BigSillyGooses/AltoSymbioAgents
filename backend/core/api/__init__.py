@@ -86,6 +86,7 @@ from .memory import MemoryAPI
 from .rag import RagAPI
 from .web import WebAPI
 from .settings import SettingsAPI
+from .usage import UsageAPI
 from .mcp import MCPAPI
 from .lifecycle import LifecycleAPI
 from .escalation import EscalationAPI
@@ -118,6 +119,7 @@ class API:
                 api_key=self._settings.get("claude_api_key", ""),
                 model=self._settings.get("claude_model"),
                 use_caching=self._settings.get("claude_prompt_caching"),
+                use_history_caching=self._settings.get("claude_history_caching"),
             ),
             required=True,
         )
@@ -168,6 +170,21 @@ class API:
             input_sanitizer.attach_settings(self._settings)
             return has_key
         self._safe_init("firewall", _firewall_init)
+
+        # Perf Phase 2: let the retrieval layer read its feature flags
+        # (embedding cache, MMR re-rank, post-RRF cutoff) from the live
+        # Settings store so UI toggles take effect without a restart.
+        self._safe_init(
+            "retrieval_settings",
+            lambda: semantic_search.attach_settings(self._settings),
+        )
+
+        # Perf Phase 6: the trajectory store reads its consolidation flags
+        # (interval, cluster size, merge similarity) at call time too.
+        def _trajectory_settings():
+            from services import trajectory_store
+            trajectory_store.attach_settings(self._settings)
+        self._safe_init("trajectory_settings", _trajectory_settings)
 
         self._memory = self._safe_init(
             "memory_manager",
@@ -230,6 +247,7 @@ class API:
         self._rag_api = RagAPI(self)
         self._web_api = WebAPI(self)
         self._settings_api = SettingsAPI(self)
+        self._usage_api = UsageAPI(self)
         self._mcp_api = MCPAPI(self)
         self._lifecycle_api = LifecycleAPI(self)
         self._escalation_api = EscalationAPI(self)
@@ -978,6 +996,10 @@ class API:
         return await self._web_api.web_fetch_to_rag(
             url, source=source, use_stealth=use_stealth,
         )
+
+    # Usage / cost prediction (Perf Phase 4)
+    def usage_predict(self, conversation_id, message):
+        return self._usage_api.usage_predict(conversation_id, message)
 
     # Settings
     def get_settings(self):

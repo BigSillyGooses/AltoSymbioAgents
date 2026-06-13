@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Callable
 
 import db
+from services import perf_metrics
 
 log = logging.getLogger("semantic_search")
 
@@ -42,6 +43,12 @@ _embed_fn = None       # callable: list[str] -> list[list[float]]
 _embed_dim: int = 384
 _init_lock = threading.Lock()
 _initialized = False
+
+# Live core.settings.Settings handle (or any object with .get), attached at
+# API init via ``attach_settings`` — same idiom as input_sanitizer. None
+# (unit tests, early startup) means every Phase-2 retrieval flag reads as
+# its legacy default, keeping behavior byte-identical.
+_settings_obj = None
 
 # ── Priority 2: BM25 module-level state ──────────────────────────────────────
 
@@ -73,11 +80,57 @@ _STOPWORDS: frozenset[str] = frozenset({
 })
 
 
+def attach_settings(settings) -> None:
+    """Give this module (and the embedding cache) the live Settings store.
+
+    Perf Phase 2: the retrieval flags (``embedding_cache_enabled``,
+    ``rag_mmr_enabled``, ``rag_mmr_lambda``, ``rag_rrf_min_score``) are read
+    at call time so a UI toggle takes effect without a restart.
+    """
+    global _settings_obj
+    _settings_obj = settings
+    try:
+        from services import embedding_cache
+        embedding_cache.attach_settings(settings)
+    except Exception:
+        pass
+
+
+def _setting(key: str, default):
+    """Best-effort settings read; missing/broken settings → legacy default."""
+    if _settings_obj is None:
+        return default
+    try:
+        value = _settings_obj.get(key, default)
+        return default if value is None else value
+    except Exception:
+        return default
+
+
 def _embed(texts: list[str]) -> list[list[float]]:
     """Embed texts using the initialized embedding function."""
     if _embed_fn is None:
         raise RuntimeError("Embedding function not initialized")
-    return _embed_fn(texts)
+    with perf_metrics.span("embed"):
+        return _embed_fn(texts)
+
+
+def _embed_cached(texts: list[str]) -> list[list[float]]:
+    """Flag-gated embed used at every query/ingest call site.
+
+    When ``embedding_cache_enabled`` is on, route through the two-tier
+    content-hash cache (services/embedding_cache.py); otherwise call the
+    real embedder directly — the exact legacy path. The perf_metrics
+    ``embed`` span lives inside ``_embed``, so cache hits naturally skip it
+    and the span keeps measuring only real embedder work.
+    """
+    try:
+        from services import embedding_cache
+        if embedding_cache.is_enabled():
+            return embedding_cache.get_or_embed(texts)
+    except Exception as exc:  # cache trouble must never break an embed
+        log.debug("embedding cache unavailable, embedding directly: %s", exc)
+    return _embed(texts)
 
 
 def _serialize(vec: list[float]) -> bytes:
@@ -276,6 +329,133 @@ def reciprocal_rank_fusion(
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
 
+# ── Perf Phase 2: MMR diversity re-rank ───────────────────────────────────────
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Plain-python cosine similarity (vectors are 384-dim; no numpy needed)."""
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    if na <= 0.0 or nb <= 0.0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _doc_vector(doc_id: str) -> list[float] | None:
+    """Fetch a document's stored embedding from the vec0 table by rowid.
+
+    Reading the vector already persisted at index time is strictly cheaper
+    than re-embedding the chunk content (even through the cache), and it is
+    exactly the vector the ANN search ranked — so MMR's pairwise
+    similarities are consistent with the retrieval that produced the
+    candidates. sqlite-vec stores packed float32; ``array('f')`` unpacks it.
+    """
+    from array import array
+    try:
+        row = db.fetchone(
+            """
+            SELECT v.embedding AS embedding
+            FROM vec_documents v
+            INNER JOIN vec_documents_map m ON m.vec_rowid = v.rowid
+            WHERE m.doc_id = ?
+            """,
+            (doc_id,),
+        )
+        if not row or row["embedding"] is None:
+            return None
+        a = array("f")
+        a.frombytes(row["embedding"])
+        return list(a)
+    except Exception as exc:
+        log.debug("vector fetch failed for %s: %s", doc_id, exc)
+        return None
+
+
+def mmr_rerank(
+    candidates: list[tuple[str, float, list[float] | None]],
+    query_vec: list[float] | None,
+    lambda_: float,
+    top_k: int,
+) -> list[str]:
+    """Greedy Maximal Marginal Relevance selection over fused candidates.
+
+    ``candidates`` is ``[(doc_id, fused_score, vector-or-None), ...]`` in
+    fused-rank order. Each greedy step picks the candidate maximising
+    ``λ·relevance − (1−λ)·max_sim_to_selected``:
+
+      - relevance is cosine(query, doc) when both vectors are available,
+        else a rank-derived fallback ``1/(1+rank)`` in the same [0,1] range
+        (BM25-only docs have no stored vector);
+      - the diversity penalty is the max cosine similarity to any
+        already-selected candidate that has a vector (vectorless docs can't
+        be measured as redundant, so they incur no penalty).
+
+    Pure function over vectors already retrieved — no DB, no embedding.
+    Returns up to ``top_k`` doc ids in selection order.
+    """
+    if not candidates or top_k <= 0:
+        return []
+    lambda_ = min(1.0, max(0.0, float(lambda_)))
+
+    relevance: dict[str, float] = {}
+    vectors: dict[str, list[float]] = {}
+    order: list[str] = []
+    for rank, (doc_id, _score, vec) in enumerate(candidates):
+        if doc_id in relevance:
+            continue
+        order.append(doc_id)
+        if vec is not None and query_vec is not None:
+            vectors[doc_id] = vec
+            relevance[doc_id] = _cosine(query_vec, vec)
+        else:
+            relevance[doc_id] = 1.0 / (1.0 + rank)
+
+    selected: list[str] = []
+    remaining = list(order)
+    while remaining and len(selected) < top_k:
+        best_id = None
+        best_score = None
+        for doc_id in remaining:
+            penalty = 0.0
+            vec = vectors.get(doc_id)
+            if vec is not None and selected:
+                penalty = max(
+                    (_cosine(vec, vectors[s]) for s in selected if s in vectors),
+                    default=0.0,
+                )
+            score = lambda_ * relevance[doc_id] - (1.0 - lambda_) * penalty
+            if best_score is None or score > best_score:
+                best_id, best_score = doc_id, score
+        selected.append(best_id)
+        remaining.remove(best_id)
+    return selected
+
+
+def _mmr_rerank_fused(
+    fused: list[tuple[str, float]],
+    query_text: str,
+    lambda_: float,
+    top_k: int,
+) -> list[tuple[str, float]]:
+    """Apply MMR over the post-RRF candidate pool. Best-effort: any failure
+    returns ``fused`` unchanged so the re-rank can never break a search."""
+    try:
+        query_vec = _embed_cached([query_text])[0]
+        candidates = [(doc_id, score, _doc_vector(doc_id)) for doc_id, score in fused]
+        with perf_metrics.span("mmr"):
+            picked = mmr_rerank(candidates, query_vec, lambda_, top_k)
+        score_map = dict(fused)
+        reordered = [(doc_id, score_map[doc_id]) for doc_id in picked]
+        # Keep the un-selected tail in fused order so callers that slice
+        # deeper than top_k still see every candidate exactly once.
+        picked_set = set(picked)
+        reordered.extend(p for p in fused if p[0] not in picked_set)
+        return reordered
+    except Exception as exc:
+        log.debug("MMR re-rank skipped: %s", exc)
+        return fused
+
+
 def search_documents_hybrid(
     query_text: str,
     top_k: int = 10,
@@ -309,11 +489,13 @@ def search_documents_hybrid(
 
     # ── BM25 candidates ──────────────────────────────────────────────────────
     if method in ("hybrid", "bm25"):
-        bm25_results = _bm25_search(query_text, n=top_k * 5)
+        with perf_metrics.span("bm25"):
+            bm25_results = _bm25_search(query_text, n=top_k * 5)
 
     # ── Vector candidates ─────────────────────────────────────────────────────
     if method in ("hybrid", "vector"):
-        vector_results = search_documents(query_text, top_k=top_k * 5, doc_type=doc_type)
+        with perf_metrics.span("vec_search"):
+            vector_results = search_documents(query_text, top_k=top_k * 5, doc_type=doc_type)
 
     # ── Vector-only: return as-is ─────────────────────────────────────────────
     if method == "vector":
@@ -351,7 +533,20 @@ def search_documents_hybrid(
     vector_rank_map  = {r["doc_id"]: i + 1 for i, r in enumerate(vector_results)}
     vector_data_map  = {r["doc_id"]: r for r in vector_results}
 
-    fused = reciprocal_rank_fusion([bm25_ids, vector_ids], k=RRF_K)
+    with perf_metrics.span("rrf"):
+        fused = reciprocal_rank_fusion([bm25_ids, vector_ids], k=RRF_K)
+
+    # ── Perf Phase 2 (both default-off; flag-off list is byte-identical) ─────
+    # Optional post-RRF score cutoff, then optional MMR diversity re-rank.
+    rrf_min_score = float(_setting("rag_rrf_min_score", 0.0) or 0.0)
+    if rrf_min_score > 0.0:
+        fused = [(doc_id, s) for doc_id, s in fused if s >= rrf_min_score]
+    if bool(_setting("rag_mmr_enabled", False)) and len(fused) > 1:
+        fused = _mmr_rerank_fused(
+            fused, query_text,
+            float(_setting("rag_mmr_lambda", 0.7) or 0.7),
+            top_k,
+        )
 
     out = []
     seen: set[str] = set()
@@ -415,7 +610,7 @@ def _index_dirty_documents(batch_size: int = 50) -> int:
         doc_id = r["id"]
         content = r["content"]
         try:
-            vecs = _embed([content])
+            vecs = _embed_cached([content])
             vec_blob = _serialize(vecs[0])
 
             existing = db.fetchone(
@@ -479,7 +674,7 @@ def _index_dirty_memories(batch_size: int = 50) -> int:
         memory_id = r["id"]
         content = r["content"]
         try:
-            vecs = _embed([content])
+            vecs = _embed_cached([content])
             vec_blob = _serialize(vecs[0])
 
             existing = db.fetchone(
@@ -527,6 +722,7 @@ def run_indexer_cycle() -> int:
     m = _index_dirty_memories()
     t = 0
     g = 0
+    c = 0
     # Catch-up embedding for ReasoningBank-lite trajectories and Guidance
     # rule shards. Imported lazily to avoid a circular import at module load
     # (both modules import semantic_search).
@@ -540,7 +736,16 @@ def run_indexer_cycle() -> int:
         g = guidance.index_pending()
     except Exception:
         pass
-    return d + m + t + g
+    # Perf Phase 6: distil raw trajectories into routing hints on the same
+    # background cadence. Flag-gated (default off → byte-identical cycle)
+    # and best-effort like the other hooks.
+    try:
+        if _setting("trajectory_consolidation_enabled", False):
+            from services import trajectory_store
+            c = trajectory_store.consolidate()
+    except Exception:
+        pass
+    return d + m + t + g + c
 
 
 def start_background_indexer(interval_seconds: int = 60) -> threading.Thread:
@@ -619,7 +824,7 @@ def search_documents(
         return []
 
     try:
-        query_vec = _embed([query_text])[0]
+        query_vec = _embed_cached([query_text])[0]
         query_blob = _serialize(query_vec)
 
         vec_rows = db.fetchall(
@@ -627,9 +832,8 @@ def search_documents(
             SELECT v.rowid, v.distance, m.doc_id
             FROM vec_documents v
             INNER JOIN vec_documents_map m ON m.vec_rowid = v.rowid
-            WHERE v.embedding MATCH ?
+            WHERE v.embedding MATCH ? AND k = ?
             ORDER BY v.distance
-            LIMIT ?
             """,
             (query_blob, top_k * 2),
         )
@@ -680,7 +884,7 @@ def search_memories(
         return []
 
     try:
-        query_vec = _embed([query_text])[0]
+        query_vec = _embed_cached([query_text])[0]
         query_blob = _serialize(query_vec)
 
         vec_rows = db.fetchall(
@@ -688,9 +892,8 @@ def search_memories(
             SELECT v.rowid, v.distance, m.memory_id
             FROM vec_memories v
             INNER JOIN vec_memories_map m ON m.vec_rowid = v.rowid
-            WHERE v.embedding MATCH ?
+            WHERE v.embedding MATCH ? AND k = ?
             ORDER BY v.distance
-            LIMIT ?
             """,
             (query_blob, top_k),
         )
