@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 from .capabilities import CapabilityTaggedResult, capabilities_for_tool
 from .exceptions import CamelToolDenied
+from security.progent_gate import gate as _policy_gate, to_args_dict
 
 log = logging.getLogger("altosybioagents.camel.adapter")
 
@@ -72,6 +73,22 @@ def make_tool_executor_for_turn(
                     reason=getattr(verdict, "reason", "denied by policy"),
                     policy_name=getattr(verdict, "policy_name", ""),
                 )
+
+        # Argument-level policy gate (clean-room; complements governance's
+        # name/budget checks by constraining tool ARGUMENTS). Same block idiom
+        # as governance above: a denial raises CamelToolDenied so the interpreter
+        # records a blocked_call and the plan keeps running. Fail-open when no
+        # policy exists for the agent, so existing agents are unaffected.
+        decision = _policy_gate.check(agent_id, tool_name, to_args_dict(args, kwargs))
+        if not decision.allowed:
+            log.info(
+                "progent_gate BLOCK tool=%s agent=%s rule=%s",
+                tool_name, agent_id, decision.rule,
+            )
+            raise CamelToolDenied(
+                reason=decision.fallback_message,
+                policy_name=f"progent:{decision.rule}",
+            )
 
         if execution_bridge is None or not hasattr(execution_bridge, "run_tool"):
             value = None

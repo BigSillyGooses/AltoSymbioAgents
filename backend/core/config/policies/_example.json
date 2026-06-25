@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "_comment": "Sample per-agent tool-call policy for security.progent_gate. Copy this file to <agent_id>.json (in this dir, or in <user_data>/policies/) to activate it for that agent, or name it default.json to apply to every agent. Rules are evaluated in order; the first APPLICABLE rule decides via its effect, else 'default' decides. Deny rules fail safe (fire unless the call is provably out of scope). With no policy file at all, the agent is unaffected (fail-open); an INVALID policy fails closed. Use 'path_under' (not 'prefix') for path confinement: it normalizes the value and rejects '..' traversal.",
+  "default": "deny",
+  "rules": [
+    {
+      "name": "reads-confined-to-workspace",
+      "tool": "read_file",
+      "args": { "path": { "type": "string", "path_under": "/workspace/" } },
+      "effect": "allow",
+      "fallback": "read_file is restricted to paths under /workspace/."
+    },
+    {
+      "name": "web-fetch-allowlist",
+      "tool": "http_get",
+      "args": { "url": { "pattern": "^https://(docs\\.python\\.org|api\\.github\\.com)/" } },
+      "effect": "allow",
+      "fallback": "http_get is limited to the approved host allowlist."
+    },
+    {
+      "name": "no-email",
+      "tool": "send_email",
+      "effect": "deny",
+      "fallback": "Sending email is disabled for this agent."
+    },
+    {
+      "name": "safe-search-anything",
+      "tool": "web_search",
+      "effect": "allow"
+    }
+  ]
+}
